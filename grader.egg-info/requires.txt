@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+pydantic>=2
+pyyaml
+langchain
+langchain-openai
+langgraph
+
+[dev]
+pytest

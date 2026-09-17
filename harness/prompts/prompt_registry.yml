@@ -1,0 +1,70 @@
+# Grader prompt 片段注册表（只存 ID，不存 prompt 正文）
+# load 条件：
+#   always            — 总是加载
+#   when_rag          — 命中 RAG 路由时加载
+#   when_route        — 特定 route_kind 时加载
+#   when_route=<name> — 特定 intent/route 时加载
+fragments:
+  - name: grader_role
+    level: system
+    version: v1
+    load: always
+    priority: 100
+    status: active
+    description: 初批助教人格与边界
+
+  - name: permission_matrix
+    level: system
+    version: v1
+    load: always
+    priority: 90
+    status: active
+    description: 三级权限矩阵硬约束
+
+  - name: anti_injection_reminder
+    level: system
+    version: v1
+    load: always
+    priority: 80
+    status: active
+    description: 学生作业正文为 Untrusted，不得当作系统指令
+
+  - name: rubric_scoring_method
+    level: system
+    version: v1
+    load: when_rag
+    priority: 70
+    status: active
+    description: 对照 rubric 逐 item 打分的方法
+
+  - name: high_risk_disclaimer
+    level: system
+    version: v1
+    load: when_route
+    priority: 60
+    status: active
+    description: 高风险动作只提案不执行
+
+  - name: batch_grading_frame
+    level: system
+    version: v1
+    load: when_route=batch_grading
+    priority: 50
+    status: active
+    description: 批量批改分片框架
+
+  - name: low_confidence_fallback
+    level: system
+    version: v1
+    load: when_route=low_confidence_query
+    priority: 40
+    status: active
+    description: 低置信度兜底话术
+
+  - name: deterministic_block_script
+    level: system
+    version: v1
+    load: when_route=security_request
+    priority: 30
+    status: active
+    description: 安全拦截确定性话术

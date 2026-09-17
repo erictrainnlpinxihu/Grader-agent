@@ -1,0 +1,53 @@
+{
+  "schema_version": "grader_manifest_v1",
+  "project": {
+    "name": "grader",
+    "version": "0.1.0",
+    "slogan": "不越权、不手软、不替老师拍板的初批助教",
+    "python": ">=3.11"
+  },
+  "endpoints": {
+    "health": true,
+    "manifest": true,
+    "chat": true,
+    "chat_resume": true,
+    "session_trace": true,
+    "eval_run": true,
+    "feedback_submit": true,
+    "session_approval": true
+  },
+  "features": {
+    "semantic_routing": true,
+    "structured_output": true,
+    "hitl_three_gates": true,
+    "source_guard": true,
+    "offline_dual_track": true,
+    "batch_grading_m1": true,
+    "eval_20_cases": true,
+    "twelve_intents": true,
+    "six_readonly_tools": true,
+    "four_high_risk_proposals": true,
+    "three_level_permission_matrix": true,
+    "rule_guard_veto": true,
+    "pydantic_cross_field_validation": true,
+    "rag_four_index_domains": true,
+    "rag_prehook_pinned_domain": true,
+    "hybrid_retrieval_rrf": true,
+    "reranker": true,
+    "retrieval_cache": true,
+    "index_cache": true,
+    "embedding_dual_track": true,
+    "prompt_fragments_registry": true,
+    "trace_recursive_pii_sanitize": true,
+    "public_trace_hidden_cot_isolation": true,
+    "five_level_trust_order": true,
+    "history_token_budget_compression": true,
+    "cost_governor": true,
+    "six_skip_final_model_scenarios": true,
+    "approval_gate_four_frozen_fields": true,
+    "business_recheck_drift_detection": true,
+    "idempotent_resume_token": true,
+    "fairness_consistency_check": true,
+    "negative_feedback_backfill": true
+  }
+}

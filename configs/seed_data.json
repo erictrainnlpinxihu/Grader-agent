@@ -1,0 +1,108 @@
+{
+  "courses": {
+    "CS101-2026spring": {
+      "course_id": "CS101-2026spring",
+      "title": "计算机科学导论",
+      "instructor_id": "ins-001",
+      "term": "2026-spring",
+      "enrolled_students": ["stu-001", "stu-002"],
+      "tas": ["ta-001"]
+    }
+  },
+  "assignments": {
+    "A3": {
+      "assignment_id": "A3",
+      "course_id": "CS101-2026spring",
+      "title": "第三作业：算法分析",
+      "rubric_version": "v1.0",
+      "due_at": "2026-07-10T23:59:00",
+      "max_total_score": 100
+    }
+  },
+  "rubrics": {
+    "A3::v1.0": {
+      "assignment_id": "A3",
+      "rubric_version": "v1.0",
+      "items": [
+        {
+          "rubric_item_id": "correctness",
+          "title": "正确性",
+          "max_score": 30,
+          "description": "算法选择是否正确、复杂度分析是否成立、结论是否站得住脚"
+        },
+        {
+          "rubric_item_id": "reasoning",
+          "title": "论证",
+          "max_score": 25,
+          "description": "推理链条是否完整、是否有反例讨论、边界情况是否覆盖"
+        },
+        {
+          "rubric_item_id": "structure",
+          "title": "结构",
+          "max_score": 20,
+          "description": "论述结构是否清晰、段落组织是否合理、术语使用是否规范"
+        },
+        {
+          "rubric_item_id": "citation",
+          "title": "引用",
+          "max_score": 25,
+          "description": "是否引用教材 / 课程讲义 / 外部文献，引用格式是否规范"
+        }
+      ]
+    }
+  },
+  "users": {
+    "stu-001": {
+      "user_id": "stu-001",
+      "role": "student",
+      "name": "张三",
+      "student_id": "2024001",
+      "enrolled_in": ["CS101-2026spring"]
+    },
+    "stu-002": {
+      "user_id": "stu-002",
+      "role": "student",
+      "name": "李四",
+      "student_id": "2024002",
+      "enrolled_in": ["CS101-2026spring"]
+    },
+    "ta-001": {
+      "user_id": "ta-001",
+      "role": "ta",
+      "name": "王助教",
+      "ta_for": ["CS101-2026spring"]
+    },
+    "ins-001": {
+      "user_id": "ins-001",
+      "role": "instructor",
+      "name": "赵教授",
+      "instructor_of": ["CS101-2026spring"]
+    }
+  },
+  "submissions": {
+    "S1001": {
+      "submission_id": "S1001",
+      "student_id": "stu-001",
+      "assignment_id": "A3",
+      "course_id": "CS101-2026spring",
+      "submitted_at": "2026-07-10T14:30:00",
+      "body_hash": "sha256:S1001-body-v1",
+      "status": "received",
+      "similarity_score": 0.25,
+      "body": "本次作业我分析了冒泡排序与快速排序的时间复杂度。冒泡排序每轮比较相邻元素，最坏情况下需要 n(n-1)/2 次比较，因此时间复杂度为 O(n^2)；快速排序通过分治把数组划分为两个子区间，平均情况下递归深度为 O(log n)，每层总共 O(n) 次比较，所以平均时间复杂度为 O(n log n)。我也讨论了快速排序最坏退化为 O(n^2) 的情形，例如输入已经有序且选择固定端点作为枢轴时。在空间复杂度方面，冒泡排序是 O(1) 原地交换，快速排序平均 O(log n) 递归栈空间。我认为在实践中快速排序通常优于冒泡排序，但对小规模数据或近乎有序的数据，插入排序可能更合适。不过我没有引用具体的教材章节或课程讲义来支撑这些结论，也没有讨论堆排序作为 O(n log n) 最坏情况保证的替代方案。"
+    },
+    "S1002": {
+      "submission_id": "S1002",
+      "student_id": "stu-002",
+      "assignment_id": "A3",
+      "course_id": "CS101-2026spring",
+      "submitted_at": "2026-07-09T10:00:00",
+      "body_hash": "sha256:S1002-body-v1",
+      "status": "recorded",
+      "similarity_score": 0.12,
+      "final_score": 88,
+      "recorded_at": "2026-07-11T09:00:00",
+      "body": "本文比较三种经典排序算法的时间与空间复杂度。冒泡排序最坏 O(n^2)、最好 O(n)；归并排序始终 O(n log n) 但需要 O(n) 额外空间；快速排序平均 O(n log n) 而最坏 O(n^2)。我引用了教材第三章关于大 O 表示法的定义，并指出大 O 描述的是上界而非精确运行时间。在工程实践中，Python 内置 sort 采用 Timsort 混合策略，对近乎有序数据近乎 O(n)。我还讨论了递归栈深度对空间复杂度的影响。"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grader"
+version = "0.1.0"
+description = "Grader — 不越权、不手软、不替老师拍板的初批助教 Agent 骨架"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "pydantic>=2",
+    "pyyaml",
+    "langchain",
+    "langchain-openai",
+    "langgraph",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "agent*", "rag*", "harness*", "eval*"]
+
+[tool.setuptools.package-data]
+"harness.prompts" = ["*.yml", "fragments/*.md"]
+"rag" = ["knowledge/*.md"]
