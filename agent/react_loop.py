@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from harness.contracts import RoutePlanCandidate, RuntimeContext
+from harness.contracts import RoutePlanCandidate, RuntimeContext, coerce_tool_name
 from harness.source_guard import SEMI_TRUSTED, inspect_source
 from harness.tool_runtime import READONLY_TOOL_WHITELIST, ToolRuntime
 
@@ -37,15 +37,30 @@ class ReActLoop:
         返回 {tool_results, observations, cost_summary, tool_names_called}。
         """
         tool_args = tool_args or {}
-        required = list(route_plan.required_tools)
-
-        # 白名单对账：required_tools 必须全在 6 只读白名单内
-        for name in required:
-            if name not in READONLY_TOOL_WHITELIST:
-                raise ValueError(f"tool {name} not in readonly whitelist")
+        # 执行层最后一道闸：只运行白名单内的只读工具。计划里出现的任何非白名单
+        # “工具”（包括模型实时发明的写动作，如 grade_submission）一律剥离并留痕，
+        # 绝不执行，也绝不因此抛异常把请求打成 HTTP 500。
+        observations: list[dict[str, Any]] = []
+        required: list[str] = []
+        for item in route_plan.required_tools:
+            name = coerce_tool_name(item)
+            if (
+                isinstance(name, str)
+                and name in READONLY_TOOL_WHITELIST
+                and name not in required
+            ):
+                required.append(name)
+            else:
+                observations.append(
+                    {
+                        "tool_name": str(item)[:80],
+                        "args": {},
+                        "output_summary": "[blocked] 非只读白名单工具，已剥离不执行",
+                        "status": "blocked_not_whitelisted",
+                    }
+                )
 
         tool_results: list[dict[str, Any]] = []
-        observations: list[dict[str, Any]] = []
         tool_names_called: list[str] = []
 
         for name in required[:RECURSION_LIMIT]:

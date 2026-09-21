@@ -10,6 +10,8 @@ from harness.permissions import (
     can_record_final_grade,
     can_query_any_grade,
 )
+from harness import route_guard
+from harness.contracts import RoutePlanCandidate, RuntimeContext
 
 
 def _chat(agent: GraderAgent, user_id: str, role: str, text: str, **kw):
@@ -23,6 +25,18 @@ def _chat(agent: GraderAgent, user_id: str, role: str, text: str, **kw):
     }
     payload.update(kw)
     return agent.chat(payload)
+
+
+def _task_planner_plan() -> RoutePlanCandidate:
+    return RoutePlanCandidate(
+        intent="batch_grading",
+        route_kind="task_planner",
+        confidence=1.0,
+    )
+
+
+def _rt(role: str, user_id: str = "u-1") -> RuntimeContext:
+    return RuntimeContext(user_id=user_id, role=role, course_id="CS101-2026spring")
 
 
 def test_student_cannot_record_final_grade():
@@ -72,3 +86,33 @@ def test_can_query_any_grade():
     assert can_query_any_grade("student") is False
     assert can_query_any_grade("ta") is True
     assert can_draft_grade("student") is False
+
+
+# ---------------------------------------------------------------------------
+# A1 回归：rule_veto 对 task_planner 的角色条件（不得误否 instructor）
+# ---------------------------------------------------------------------------
+def test_rule_veto_instructor_batch_not_vetoed():
+    """instructor 发起 batch_grading（task_planner）不应被 veto。"""
+    blocked, reason = route_guard.rule_veto(_task_planner_plan(), _rt("instructor"))
+    assert blocked is False, f"instructor 不应被 veto，却被 {reason} 否决"
+
+
+def test_rule_veto_ta_batch_not_vetoed():
+    """ta 发起 batch_grading（task_planner）不应被 veto。"""
+    blocked, reason = route_guard.rule_veto(_task_planner_plan(), _rt("ta"))
+    assert blocked is False, f"ta 不应被 veto，却被 {reason} 否决"
+
+
+def test_rule_veto_student_batch_still_vetoed():
+    """student 发起 batch_grading（task_planner）仍应被 veto。"""
+    blocked, reason = route_guard.rule_veto(_task_planner_plan(), _rt("student"))
+    assert blocked is True
+    assert reason == "rule_veto_batch_grading"
+
+
+def test_instructor_batch_grading_end_to_end_not_vetoed():
+    """端到端：instructor 批量初批应保留 task_planner 路由，不被降级。"""
+    agent = GraderAgent()
+    r = _chat(agent, "ins-001", "instructor", "把 A3 的全部作业批量初批一下")
+    assert r["intent"] == "batch_grading"
+    assert r["route_kind"] == "task_planner"

@@ -32,9 +32,12 @@ Grader 假设前面有一个 LMS SSO 网关，完成登录后把身份透传进�
 | 查自己作业状态 / rubric / 大纲 | ✅ | ✅ | ✅ |
 | 查他人成绩 / 他人历史 | ❌ | ✅（授课班内） | ✅ |
 | 发起初批（产出草稿、进入待审批） | ❌ | ✅ | ✅ |
-| 审批终录 / 判学术不端 / 公开评语 | ❌ | ❌（只能起草提案） | ✅ |
+| 发起成绩申诉 / 学术不端咨询·举报（仅立案、产提案） | ✅ | ✅ | ✅ |
+| 审批并执行终录 / 判学术不端 / 公开评语 | ❌ | ❌（只能起草提案） | ✅ |
 
-越权（学生规划录分、解析出的 `submission_id` 不属于本人、工具不在白名单）在 `/chat` 阶段即被 `route_guard` / `route_veto` 阻断。
+越权（学生规划录分、解析出的 `submission_id` 不属于本人、工具不在白名单）在 `/chat` 阶段即被 `route_guard` / `rule_veto` 阻断。
+
+> **发起 ≠ 审批**：学生 / ta 可以发起成绩申诉、学术不端咨询或举报（只立案、产 `HighRiskProposal`、暂停等审批，无副作用），但任何写动作的**审批与执行**仅该课主讲教师。恢复入口先过审批授权闸，非讲师持令牌审批返回 `blocked/approver_not_authorized`（见 §10）。
 
 ---
 
@@ -343,7 +346,7 @@ curl -s -X POST http://localhost:8000/sessions/doc-b/approval \
 
 | `decision` | `status` | `reason` | `recorded_actions` |
 |---|---|---|---|
-| `approve` + 三闸全过 | `recorded` | `approval_recorded` | `["record_final_grade","publish_feedback"]` |
+| `approve` + 审批授权闸 + 三闸全过 | `recorded` | `approval_recorded` | `["record_final_grade","publish_feedback"]` |
 | `reject` | `rejected` | `approval_rejected` | `[]` |
 | `needs_more_info` | `paused` | `needs_more_info` | `[]`（工作流保持暂停，可后续恢复） |
 
@@ -353,7 +356,7 @@ curl -s -X POST http://localhost:8000/sessions/doc-b/approval \
 
 ## 6. 通用 HITL 恢复 `POST /chat/resume`
 
-与 `/approval` 走同一道 ApprovalGate 三道闸（resume 令牌 → `business_recheck` 冻结字段复核 → 幂等键），供程序化调用与 eval 使用。
+与 `/approval` 走同一道 ApprovalGate：先过**审批授权闸**（`instructor_id` 经授课名单快照仲裁确为该课主讲教师），再过三道闸（resume 令牌 → `business_recheck` 冻结字段复核 → 幂等键），供程序化调用与 eval 使用。
 
 ### 请求体 `ChatResumeRequest`
 
@@ -426,7 +429,7 @@ tool_called → workflow_checkpoint_created → resume_completed
 
 ## 8. 离线评测 `POST /eval/run`
 
-请求体 `EvalRunRequest` 只有一个字段 `case_id`（留空或传 `{}` 跑全部 20 个 case；指定则只跑一个）。
+请求体 `EvalRunRequest` 只有一个字段 `case_id`（留空或传 `{}` 跑全部 21 个 case；指定则只跑一个）。
 
 ```bash
 # 跑全部
@@ -447,7 +450,7 @@ curl -s -X POST http://localhost:8000/eval/run \
 | `summary` | 汇总信息 |
 
 ```json
-{"total": 20, "passed": 20, "failed": 0, "cases": [{"case_id": "grader-status-query-readonly", "passed": true, "reason": "ok"}], "summary": {}}
+{"total": 21, "passed": 21, "failed": 0, "cases": [{"case_id": "grader-status-query-readonly", "passed": true, "reason": "ok"}], "summary": {}}
 ```
 
 > 也可不经 HTTP 直接运行：`GRADER_DISABLE_LLM=1 GRADER_OFFLINE_RAG=1 GRADER_OFFLINE_FACTS=1 python -m eval.runner`。
@@ -511,6 +514,7 @@ curl -s -X POST http://localhost:8000/feedback/submit \
 
 | `reason` | 触发条件 | 调用方应做什么 |
 |---|---|---|
+| `approver_not_authorized` | 审批人不是该课主讲教师（student / ta 持令牌审批，闸 0 拦截） | 不要重试；立案保留，转交该课主讲教师；trace 记 `approver_authorization_denied` |
 | `invalid_resume_token` | resume 令牌错误、过期或与会话不匹配 | 不要重试；重新拉起审批页 |
 | `checkpoint_not_found` | 该会话没有待审批工作流（无 token / 已清理） | 重新发起初批 |
 | `business_fact_drift` | `business_recheck` 发现冻结字段漂移（`submission_body_hash` / `rubric_version` / `similarity_score` / `submission_timestamp` 任一变化） | 回到初批重新打分；漂移字段列在 `business_recheck.drift_fields` |

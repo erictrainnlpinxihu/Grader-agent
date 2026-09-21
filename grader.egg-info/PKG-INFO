@@ -3,6 +3,7 @@ Name: grader
 Version: 0.1.0
 Summary: Grader — 不越权、不手软、不替老师拍板的初批助教 Agent 骨架
 Requires-Python: >=3.11
+License-File: LICENSE
 Requires-Dist: fastapi
 Requires-Dist: uvicorn
 Requires-Dist: httpx
@@ -13,3 +14,4 @@ Requires-Dist: langchain-openai
 Requires-Dist: langgraph
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file

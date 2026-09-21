@@ -7,10 +7,34 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+import json
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from typing_extensions import TypedDict
+
+
+def coerce_tool_name(item: Any) -> Optional[str]:
+    """把模型可能返回的各种"工具"形状归一为纯工具名字符串。
+
+    在线模型偶尔会把 function-call 序列化成 ``{"name": ..., "args": ...}``
+    的 dict，或把整段 JSON 塞进字符串。这里只做形状归一，**不做白名单判定**
+    （白名单属于执行层，见 ``tool_runtime.READONLY_TOOL_WHITELIST``）。
+    """
+    if isinstance(item, str):
+        s = item.strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except (ValueError, TypeError):
+                return s or None
+            if isinstance(obj, dict) and isinstance(obj.get("name"), str):
+                return obj["name"].strip() or None
+        return s or None
+    if isinstance(item, dict):
+        name = item.get("name")
+        return name.strip() if isinstance(name, str) and name.strip() else None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +84,35 @@ class RoutePlanCandidate(BaseModel):
     requires_workflow: bool = False
     risk_level: Literal["low", "high"] = "low"
     fallback_policy: Optional[str] = None
+
+    @field_validator("required_tools", mode="before")
+    @classmethod
+    def _normalize_required_tools(cls, value: Any) -> list[str]:
+        """模型把工具写成 dict / JSON 字符串时归一为纯名字；无法识别的丢弃。
+
+        这里只规整形状，是否允许执行由执行层白名单再判一次（纵深防御）。
+        """
+        if not isinstance(value, list):
+            return []
+        names: list[str] = []
+        for item in value:
+            name = coerce_tool_name(item)
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @field_validator("knowledge_domains", mode="before")
+    @classmethod
+    def _normalize_knowledge_domains(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        domains: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                domains.append(item.strip())
+            elif isinstance(item, dict) and isinstance(item.get("name"), str):
+                domains.append(item["name"].strip())
+        return domains
 
     @model_validator(mode="after")
     def cross_field_check(self) -> "RoutePlanCandidate":

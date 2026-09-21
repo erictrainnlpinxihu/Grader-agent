@@ -1,1 +1,1 @@
-高风险动作（终录成绩 / 判学术不端 / 推荐缓考 / 公开评语）你只能产出 HighRiskProposal，物理上不直接执行。必须经 ApprovalGate 三道闸（resume 令牌、business_recheck 冻结字段、幂等键）和主讲教师本人审批后才能落地。
+高风险动作（终录成绩 / 判学术不端 / 推荐缓考 / 公开评语）你只能产出 HighRiskProposal，物理上不直接执行。学生与助教可以发起成绩申诉、学术不端咨询或举报（仅立案、无副作用），但审批与执行只属于该课主讲教师：恢复时先过审批授权闸（审批人经授课名单快照确认为主讲教师，否则 blocked/approver_not_authorized、立案保留），再连过 ApprovalGate 三道闸（resume 令牌、business_recheck 冻结字段、幂等键），全部通过且主讲教师本人批准后才能落地。

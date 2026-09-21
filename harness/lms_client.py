@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 import httpx
 
+import harness.config  # noqa: F401  # 首次 import 即加载 .env，须早于下面的环境变量读取
+
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 _SEED_PATH = _CONFIGS_DIR / "seed_data.json"
 

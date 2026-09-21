@@ -22,11 +22,24 @@ from harness.permissions import PermissionError
 from harness.source_guard import UNTRUSTED, inspect_source
 from harness.tool_runtime import ToolRuntime
 from harness.trace import TraceStore, make_event
-from rag.hybrid_retrieval import HybridRetriever
+from rag.hybrid_retrieval import PINNED_DOMAIN, HybridRetriever
 
 
 def _now_date_bucket() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+# 审批通过（recorded）后，按 checkpoint 里的提案动作给出对外话术与已授权动作清单
+_RECORDED_ANSWERS = {
+    "record_final_grade": "审批通过：{sid} 成绩已录入，草稿评语已对学生公开。",
+    "judge_academic_misconduct": "审批通过：{sid} 的学术不端终判已由主讲教师确认并记录。",
+    "recommend_deferred_exam": "审批通过：{sid} 的缓考推荐已由主讲教师确认并提交。",
+}
+_RECORDED_ACTIONS = {
+    "record_final_grade": ["record_final_grade", "publish_feedback"],
+    "judge_academic_misconduct": ["judge_academic_misconduct"],
+    "recommend_deferred_exam": ["recommend_deferred_exam"],
+}
 
 
 class GraderAgent:
@@ -50,6 +63,9 @@ class GraderAgent:
         self.react_loop = ReActLoop(self.tools)
         self.final_composer = FinalAnswerComposer()
         self.batch_grader = BatchGrader()
+        # 绑定真实主 loop：批量每份回调 GraderAgent.chat 走真实单份初批
+        # （离线 deterministic_score 按 rubric 关键词打分），不再走 72.0 桩。
+        self.batch_grader.bind(self.chat)
 
         # session 级状态
         self._memory: dict[str, dict[str, Any]] = {}
@@ -118,6 +134,9 @@ class GraderAgent:
 
         tool_args = self._tool_args(request, rewrite, rt)
 
+        # RAG 检索是否命中实例级缓存（rag 分支才会用到，其余分支为 False）
+        rag_cache_hit = False
+
         try:
             if route_plan.route_kind == "tool_readonly":
                 react = self.react_loop.run(route_plan, rt, tool_args)
@@ -131,18 +150,38 @@ class GraderAgent:
                     )
                 )
             elif route_plan.route_kind == "rag":
-                rag_results = self.retriever.retrieve(rewrite.rewritten_query, route_plan.intent)
+                rag_results, rag_cache_hit = self.retriever.retrieve(
+                    rewrite.rewritten_query, route_plan.intent
+                )
+                if rag_cache_hit:
+                    self.trace_store.add(
+                        make_event(
+                            "cache_hit",
+                            session_id,
+                            {
+                                "intent": route_plan.intent,
+                                "domains": list({r["domain"] for r in rag_results}),
+                            },
+                        )
+                    )
                 self.trace_store.add(
                     make_event(
                         "rag_retrieved",
                         session_id,
-                        {"domains": list({r["domain"] for r in rag_results})},
+                        {
+                            "domains": list({r["domain"] for r in rag_results}),
+                            "cache_hit": rag_cache_hit,
+                        },
                     )
                 )
             elif route_plan.route_kind == "workflow_human":
-                pending_approval = self._act_workflow(
+                pending_approval, pinned = self._act_workflow(
                     route_plan, rt, tool_args, session_id
                 )
+                if pinned:
+                    # 高风险学术诚信分支：把直挂政策 citation 并入检索结果，
+                    # 由 FinalAnswerComposer 统一映射为对外 citations。
+                    rag_results = [pinned]
             elif route_plan.route_kind == "task_planner":
                 batch_state = self._run_batch(
                     route_plan, rt, request, session_id
@@ -153,6 +192,17 @@ class GraderAgent:
                 make_event("permission_denied", session_id, {"error": str(exc)})
             )
             return self._deny_response(session_id, route_plan, rt, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            # 单条坏输入（如模型产出畸形计划 / 工具名）不得冒泡成 HTTP 500：
+            # 记录可观测事件后降级直答，实现请求级隔离，不影响其他会话。
+            self.trace_store.add(
+                make_event(
+                    "act_degraded",
+                    session_id,
+                    {"error_type": type(exc).__name__, "error": str(exc)[:200]},
+                )
+            )
+            return self._degraded_response(session_id, route_plan)
 
         # ---------- 4. observe ----------
         observe_ctx = self.context_builder.build(
@@ -168,13 +218,25 @@ class GraderAgent:
 
         # ---------- 5. respond ----------
         composed = self.final_composer.compose(
-            route_plan, rt, tool_results, rag_results,
+            route_plan, rt, tool_results, rag_results, cache_hit=rag_cache_hit,
         )
+
+        # RAG 缓存命中：respond 阶段跳过最终模型润色（离线本就不走模型，
+        # 在线时这里确保不重复调 llm.generate）
+        if rag_cache_hit and route_plan.route_kind == "rag":
+            self.trace_store.add(
+                make_event(
+                    "model_answer_skipped",
+                    session_id,
+                    {"reason": "rag_cache_hit", "intent": route_plan.intent},
+                )
+            )
 
         # grading_request：把 proposal 落 checkpoint（HITL）
         if route_plan.intent == "grading_request" and composed.get("proposal"):
             pending_approval = self._open_checkpoint(
-                composed["proposal"], session_id, state="draft_graded"
+                composed["proposal"], session_id, state="draft_graded",
+                course_id=request.get("course_id"),
             )
             composed["pending_approval"] = pending_approval
 
@@ -200,6 +262,7 @@ class GraderAgent:
                     "guard_reason": guard_meta["guard_reason"],
                     "confidence": route_plan.confidence,
                 },
+                "rag": {"cache_hit": rag_cache_hit},
                 "workflow": self._workflow_state(session_id, pending_approval),
                 "batch": batch_state,
                 "cost_summary": cost_summary,
@@ -251,6 +314,20 @@ class GraderAgent:
             }
 
         submission_id = checkpoint["submission_id"]
+
+        # 审批授权闸：以 LMS 授课名单快照仲裁审批人角色。
+        # student / ta 可以发起立案，但终录 / 终判 / 缓考推荐仅 instructor 可审批。
+        course_id = checkpoint.get("course_id") or request.get("course_id") or "CS101-2026spring"
+        roster = self.lms.get_instructor_roster(course_id) or {}
+        if roster.get("instructor_id") == instructor_id:
+            approver_role = "instructor"
+        elif instructor_id in (roster.get("ta_ids") or []):
+            approver_role = "ta"
+        elif instructor_id in (roster.get("student_ids") or []):
+            approver_role = "student"
+        else:
+            approver_role = "unknown"
+
         current_frozen = self._freeze_from_lms(submission_id)
 
         result = self.approval_gate.resume(
@@ -259,7 +336,33 @@ class GraderAgent:
             approved_instructor_id=instructor_id,
             current_frozen=current_frozen,
             timestamp_bucket=_now_date_bucket(),
+            approver_role=approver_role,
         )
+
+        if result.get("reason") == "approver_not_authorized":
+            self.trace_store.add(
+                make_event(
+                    "approver_authorization_denied",
+                    session_id,
+                    {"approver_role": approver_role, "gate_action": gate_action},
+                )
+            )
+            pending_state = checkpoint.get("state")
+            return {
+                "session_id": session_id,
+                "answer": (
+                    "审批被拒：终录成绩 / 学术不端终判 / 缓考推荐仅主讲教师有权审批。"
+                    "立案已保留，将转主讲教师处理。"
+                ),
+                "status": "blocked",
+                "reason": "approver_not_authorized",
+                "idempotent_replay": False,
+                "recorded_actions": [],
+                "workflow": {"state": pending_state},
+                "session_state": {
+                    "workflow": {"state": pending_state, "pending_action": "require_instructor_approval"}
+                },
+            }
 
         self.trace_store.add(
             make_event(
@@ -275,9 +378,10 @@ class GraderAgent:
                 "已回到 draft_graded 重新初批。"
             )
         elif result["status"] == "recorded":
-            answer = (
-                f"审批通过：{submission_id} 成绩已录入，草稿评语已对学生公开。"
-            )
+            proposal_action = checkpoint["proposal"]["action"]
+            answer = _RECORDED_ANSWERS.get(
+                proposal_action, "审批通过：{sid} 的高风险动作已执行。"
+            ).format(sid=submission_id)
         elif result["status"] == "rejected":
             answer = "已退回：主讲教师驳回了本次初批草稿。"
         elif result["status"] == "paused":
@@ -292,7 +396,7 @@ class GraderAgent:
             "reason": result.get("reason"),
             "idempotent_replay": result.get("idempotent_replay", False),
             "recorded_actions": (
-                ["record_final_grade", "publish_feedback"]
+                _RECORDED_ACTIONS.get(checkpoint["proposal"]["action"], [])
                 if result["status"] == "recorded"
                 else []
             ),
@@ -353,11 +457,16 @@ class GraderAgent:
         rt: RuntimeContext,
         tool_args: dict[str, Any],
         session_id: str,
-    ) -> Optional[dict[str, Any]]:
+    ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
         submission_id = tool_args.get("submission_id") or "S1001"
-        action = "judge_academic_misconduct"
         if route_plan.intent == "deferred_exam_query":
             action = "recommend_deferred_exam"
+        elif route_plan.intent == "grade_appeal":
+            # 成绩申诉可能改分，对应终录动作；学术不端疑问对应学术不端终判
+            action = "record_final_grade"
+        else:
+            # academic_integrity_question 默认
+            action = "judge_academic_misconduct"
         frozen = self._freeze_from_lms(submission_id)
         proposal = HighRiskProposal(
             action=action,
@@ -372,7 +481,41 @@ class GraderAgent:
                 {"action": action, "submission_id": submission_id},
             )
         )
-        return self._open_checkpoint(proposal, session_id, state="flagged")
+        pending = self._open_checkpoint(
+            proposal, session_id, state="flagged",
+            course_id=tool_args.get("course_id"),
+        )
+
+        # 高风险学术诚信分支（成绩申诉 / 学术不端疑问）：确定性直挂政策 citation。
+        # 政策是必须逐条完整呈现的硬约束，不参与向量相似度召回，因此在这里
+        # 确定性 append 一条 pinned citation，并入 response.citations 与 trace。
+        pinned: Optional[dict[str, Any]] = None
+        if route_plan.intent in {"grade_appeal", "academic_integrity_question"}:
+            pinned = {
+                "chunk_id": PINNED_DOMAIN,
+                "text": "",
+                "domain": PINNED_DOMAIN,
+                "score": 1.0,
+                "pinned": True,
+                "metadata": {
+                    "policy_id": "academic_integrity",
+                    "scene_key": "policy",
+                    "title": "academic_integrity",
+                },
+            }
+            self.trace_store.add(
+                make_event(
+                    "policy_citation_pinned",
+                    session_id,
+                    {
+                        "domain": PINNED_DOMAIN,
+                        "pinned": True,
+                        "retrieval_stage": "pre_retrieval",
+                        "policy_id": "academic_integrity",
+                    },
+                )
+            )
+        return pending, pinned
 
     def _run_batch(
         self,
@@ -426,6 +569,7 @@ class GraderAgent:
         proposal: HighRiskProposal,
         session_id: str,
         state: str,
+        course_id: Optional[str] = None,
     ) -> dict[str, Any]:
         cp = self.approval_gate.create_checkpoint(
             submission_id=proposal.submission_id,
@@ -433,6 +577,9 @@ class GraderAgent:
             frozen_fields=proposal.frozen_fields,
             proposal=proposal,
         )
+        # 记录课程，供 resume 时按授课名单仲裁审批人角色
+        if course_id:
+            cp["course_id"] = course_id
         self._session_resume_token[session_id] = cp["resume_token"]
         self.trace_store.add(
             make_event(
@@ -508,6 +655,23 @@ class GraderAgent:
             "next_action": "blocked",
             "needs_human_approval": False,
             "session_state": {"routing": {"guard_override": True, "guard_reason": reason}},
+        }
+
+    def _degraded_response(self, session_id: str, route_plan: Any) -> dict[str, Any]:
+        """act 阶段未预期异常的降级响应：HTTP 200，不产草稿 / 不开审批。"""
+        return {
+            "session_id": session_id,
+            "answer": "暂时无法处理这个请求，请稍后再试或联系助教 / 主讲教师。",
+            "signals": ["degraded", "act_degraded"],
+            "intent": route_plan.intent,
+            "route_kind": "deterministic",
+            "grading_draft": None,
+            "pending_approval": None,
+            "trace_events": [e.model_dump() for e in self.trace_store.list(session_id)],
+            "citations": [],
+            "next_action": "degraded",
+            "needs_human_approval": False,
+            "session_state": {"system": {"degraded": True}},
         }
 
 

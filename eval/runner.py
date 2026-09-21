@@ -100,7 +100,26 @@ class EvalRunner:
             last = agent.chat(payload)
             all_trace_events.extend(last.get("trace_events", []))
         last["_all_trace_events"] = all_trace_events
-        return self._assert(case, last, agent)
+        result = self._assert(case, last, agent)
+
+        # byte_identical_runs：离线连跑 N 次，actual_answer 字节级一致才 pass。
+        # 用于 degradation 等确定性话术的可复现性回归。
+        n = case.get("byte_identical_runs")
+        if n:
+            answers = [last.get("answer", "")]
+            for _ in range(int(n) - 1):
+                fresh = self._fresh_agent()
+                again = fresh.chat(
+                    self._chat_payload(rt, messages[0], f"{case['case_id']}-bi")
+                )
+                answers.append(again.get("answer", ""))
+            if len(set(answers)) != 1:
+                result["passed"] = False
+                result["reason"] = (
+                    (result.get("reason", "") + "; " if result.get("reason") else "")
+                    + f"byte_identical mismatch across {n} runs (variants={len(set(answers))})"
+                )
+        return result
 
     # ------------------------------------------------------------------
     def _run_resume(self, case: dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +300,27 @@ class EvalRunner:
             if ev not in event_names and ev not in all_names:
                 failures.append(f"missing_trace_event={ev}")
 
+        # expected_trace_payload：按 event 名定位 trace 事件，对 payload 做点路径相等断言
+        all_trace = list(resp.get("trace_events", [])) + list(resp.get("_all_trace_events", []))
+        for expected in exp.get("expected_trace_payload", []):
+            ev_name = expected.get("event")
+            dot = expected.get("path")
+            want = expected.get("value")
+            hit = False
+            got_seen: list[Any] = []
+            for ev in all_trace:
+                if ev.get("event") != ev_name:
+                    continue
+                got = _get_dot(ev.get("payload", {}), dot)
+                got_seen.append(got)
+                if got == want:
+                    hit = True
+                    break
+            if not hit:
+                failures.append(
+                    f"trace_payload {ev_name}.{dot} != {want} (seen={got_seen})"
+                )
+
         # expected_session_state
         for path, want in (exp.get("expected_session_state") or {}).items():
             got = _get_dot(resp.get("session_state", {}), path)
@@ -300,6 +340,25 @@ class EvalRunner:
         for t in exp.get("forbidden_text", []):
             if t in resp.get("answer", ""):
                 failures.append(f"forbidden_text_hit={t}")
+
+        # expected_citations：至少有一条 citation 的 source 命中期望域
+        citations = resp.get("citations", [])
+        for expected in exp.get("expected_citations", []):
+            want_src = expected.get("source")
+            want_stage = expected.get("retrieval_stage")
+            hit = False
+            for c in citations:
+                if c.get("source") != want_src:
+                    continue
+                if want_stage and c.get("retrieval_stage") != want_stage:
+                    continue
+                hit = True
+                break
+            if not hit:
+                failures.append(
+                    f"missing_citation source={want_src} stage={want_stage} "
+                    f"got={[c.get('source') for c in citations]}"
+                )
 
         return {
             "case_id": case["case_id"],

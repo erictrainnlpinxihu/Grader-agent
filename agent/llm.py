@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+import harness.config  # noqa: F401  # 首次 import 即加载 .env，须早于下面的环境变量读取
+
 
 def llm_disabled() -> bool:
     """GRADER_DISABLE_LLM=1 时为离线模式。"""

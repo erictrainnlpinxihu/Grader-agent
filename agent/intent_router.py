@@ -10,13 +10,14 @@ route_guard 守卫横切在 plan → act 之间：
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, get_args
 
 from agent.llm import get_llm_client
-from harness.contracts import QueryRewrite, RoutePlanCandidate, RuntimeContext
+from harness.contracts import INTENTS, QueryRewrite, RoutePlanCandidate, RuntimeContext
 from harness import route_guard
 
 CONFIDENCE_THRESHOLD = 0.7
+_INTENT_SET = set(get_args(INTENTS))
 
 # 离线关键词表（顺序敏感：先命中先返回）
 _OFFLINE_RULES: list[tuple[tuple[str, ...], str]] = [
@@ -32,6 +33,24 @@ _OFFLINE_RULES: list[tuple[tuple[str, ...], str]] = [
     (("你好", "在吗", "谢谢", "嗨", "hi", "hello"), "general_chat"),
     (("暂不可用", "系统可用", "降级", "不可用", "系统现在"), "degradation_request"),
 ]
+
+# 受保护意图：安全 / 高风险意图"模型不可降级"。
+# 在线模型若把"算不算学术不端""我要申诉"误判成 grading / general 等更弱意图，
+# 关键词命中后强制纠偏到受保护意图（风险意图优先，宁可信其有）。
+# 普通业务意图（查状态 / rubric / 大纲等）不在此列，仍以模型语义分类为准。
+_PROTECTED_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("忽略", "你现在是", "管理员", "系统提示", "system message"), "security_request"),
+    (("查重", "抄袭", "学术不端", "代写", "雷同"), "academic_integrity_question"),
+    (("申诉", "不服", "误判", "复议"), "grade_appeal"),
+]
+
+
+def _protected_intent(text: str) -> Optional[str]:
+    """返回文本命中的受保护意图（顺序敏感：安全 > 学术不端 > 申诉），否则 None。"""
+    for keywords, intent in _PROTECTED_RULES:
+        if any(k in text for k in keywords):
+            return intent
+    return None
 
 
 def _build_plan(
@@ -61,8 +80,8 @@ def _build_plan(
     )
 
 
-# intent → 离线默认路由
-def _offline_plan(intent: str, rt: RuntimeContext) -> RoutePlanCandidate:
+# intent → 权威执行计划映射（在线 / 离线共用）
+def _plan_for_intent(intent: str, rt: RuntimeContext) -> RoutePlanCandidate:
     if intent == "assignment_status_query":
         return _build_plan(
             intent, "tool_readonly",
@@ -124,6 +143,14 @@ class IntentRouter:
         # 1. 得到候选路由
         plan = self._route_candidate(text, runtime_context, history)
 
+        # 1.5 受保护意图安全网：安全 / 高风险意图模型不可降级。
+        #     在线模型把"算不算学术不端""我要申诉"误判为更弱意图时，按关键词强制纠偏。
+        protected = _protected_intent(text)
+        if protected and plan.intent != protected:
+            guard_meta["guard_override"] = True
+            guard_meta["guard_reason"] = f"keyword_guardrail_{protected}"
+            plan = _plan_for_intent(protected, runtime_context)
+
         # 2. rule_guard：安全 / 权限 / 高风险边界
         blocked, reason = route_guard.rule_guard(plan.intent, runtime_context)
         if blocked:
@@ -167,7 +194,13 @@ class IntentRouter:
                     "low_confidence_query", "deterministic_fallback",
                     confidence=online.confidence,
                 )
-            return online
+            # 模型只决定 intent（语义分类）；route_kind / required_tools /
+            # knowledge_domains / risk_level 等"执行计划"一律由确定性映射按
+            # intent 钉死，模型自填的工具（如它发明的 grade_submission）、
+            # 路由类型或风险等级均不采信。这从根上防止模型越权指定写工具。
+            if online.intent in _INTENT_SET:
+                return _plan_for_intent(online.intent, runtime_context)
+        # 无模型 / 解析失败 / 模型给出越界 intent：回落关键词确定性路由
         return self._offline_route(text, runtime_context)
 
     # ------------------------------------------------------------------
@@ -175,7 +208,7 @@ class IntentRouter:
         for keywords, intent in _OFFLINE_RULES:
             if any(k in text for k in keywords):
                 # 学生发起批量批改在 rule_guard 阶段拦；这里先给默认 plan
-                return _offline_plan(intent, rt)
+                return _plan_for_intent(intent, rt)
         return _build_plan("low_confidence_query", "deterministic_fallback")
 
     # ------------------------------------------------------------------

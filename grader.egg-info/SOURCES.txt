@@ -1,3 +1,4 @@
+LICENSE
 README.md
 pyproject.toml
 agent/__init__.py
@@ -22,6 +23,7 @@ grader.egg-info/requires.txt
 grader.egg-info/top_level.txt
 harness/__init__.py
 harness/approval_gate.py
+harness/config.py
 harness/context_builder.py
 harness/contracts.py
 harness/cost.py
@@ -55,6 +57,7 @@ rag/knowledge/grading_sop.md
 rag/knowledge/rubric_knowledge.md
 rag/knowledge/textbook_chapters.md
 tests/test_approval_gate.py
+tests/test_config.py
 tests/test_drift.py
 tests/test_idempotency.py
 tests/test_permissions.py

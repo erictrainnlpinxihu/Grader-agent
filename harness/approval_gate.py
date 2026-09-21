@@ -2,7 +2,9 @@
 
 状态机：received → draft_graded → flagged → approved → recorded（+ rejected, paused）。
 
-三道闸：
+恢复时按顺序经过：
+0. 审批授权（approver_role 必须为 instructor，否则 blocked/approver_not_authorized）
+   —— 终录 / 终判 / 推荐是讲师专属；student / ta 可以发起立案，但不能审批自己或他人的提案
 1. resume 令牌校验（无效 → blocked/invalid_resume_token）
 2. business_recheck 冻结字段复核（漂移 → blocked/business_fact_drift，返回 drift_field）
 3. 幂等键（submission_id + rubric_version + approved_instructor_id + timestamp_bucket）
@@ -145,13 +147,11 @@ class ApprovalGate:
         approved_instructor_id: str,
         current_frozen: dict[str, Any],
         timestamp_bucket: str,
+        approver_role: str = "instructor",
     ) -> dict[str, Any]:
         """恢复暂停的审批；approved_action ∈ {approved, rejected, needs_more_info}。
 
-        三道闸：
-        1. resume 令牌校验
-        2. business_recheck 冻结字段
-        3. 幂等键
+        顺序：授权（仅 instructor）→ 1. resume 令牌 → 2. business_recheck → 3. 幂等键。
         """
         # 闸 1：resume 令牌
         checkpoint = self._checkpoints.get(resume_token)
@@ -159,6 +159,16 @@ class ApprovalGate:
             return {
                 "status": "blocked",
                 "reason": "invalid_resume_token",
+                "accepted": False,
+                "idempotent_replay": False,
+            }
+
+        # 闸 0：审批授权。终录 / 终判 / 推荐是 instructor 专属；
+        # student / ta 可发起立案，但不能审批（gate 默认 instructor，安全缺省）。
+        if approver_role != "instructor":
+            return {
+                "status": "blocked",
+                "reason": "approver_not_authorized",
                 "accepted": False,
                 "idempotent_replay": False,
             }

@@ -9,6 +9,8 @@ import hashlib
 import math
 import os
 
+import harness.config  # noqa: F401  # 首次 import 即加载 .env，须早于下面的环境变量读取
+
 EMBED_DIM = 256
 
 

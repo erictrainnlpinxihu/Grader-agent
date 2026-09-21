@@ -93,6 +93,7 @@ class FinalAnswerComposer:
         rag_results: list[dict[str, Any]],
         trace_events: Optional[list[dict[str, Any]]] = None,
         grading_draft: Optional[GradingDraft] = None,
+        cache_hit: bool = False,
     ) -> dict[str, Any]:
         intent = route_plan.intent
         route_kind = route_plan.route_kind
@@ -128,7 +129,7 @@ class FinalAnswerComposer:
 
         # rag 分支
         if route_kind == "rag":
-            return self._rag_answer(route_plan, rag_results, tainted)
+            return self._rag_answer(route_plan, rag_results, tainted, cache_hit=cache_hit)
 
         # task_planner 由 batch 结果直答
         if route_kind == "task_planner":
@@ -238,6 +239,7 @@ class FinalAnswerComposer:
         route_plan: RoutePlanCandidate,
         rag_results: list[dict[str, Any]],
         tainted: bool,
+        cache_hit: bool = False,
     ) -> dict[str, Any]:
         if not rag_results:
             return self._tool_empty()
@@ -248,18 +250,20 @@ class FinalAnswerComposer:
         answer = f"依据{top.get('domain', '相关政策')}：{snippet_text[:160]}"
         if tainted:
             answer = "[tainted-source-redacted] " + answer
-        online = self.llm.generate(
-            render_system_prompt({"needs_rag": True, "route_kind": "rag"}),
-            f"基于以下检索结果作答，不要编造：{rag_results[:2]}",
-        )
-        if online:
-            answer = online
+        # 缓存命中或离线：跳过最终模型润色，直接用确定性模板
+        if not cache_hit:
+            online = self.llm.generate(
+                render_system_prompt({"needs_rag": True, "route_kind": "rag"}),
+                f"基于以下检索结果作答，不要编造：{rag_results[:2]}",
+            )
+            if online:
+                answer = online
         return {
             "answer": answer,
             "signals": ["rag_hit", f"domain:{top.get('domain', 'unknown')}"],
             "grading_draft": None,
             "proposal": None,
-            "skip_reason": None,
+            "skip_reason": "rag_cache_hit" if cache_hit else None,
             "next_action": "answer_user",
             "needs_human_approval": False,
             "citations": self._citations(rag_results),
@@ -276,6 +280,21 @@ class FinalAnswerComposer:
         if intent == "general_chat":
             answer = "你好，我是 Grader 初批助教。你可以让我查作业状态、查 rubric，或请求批改作业。"
             signals = ["general_chat", "deterministic"]
+        elif intent == "grading_request":
+            # student 发起初批被 rule_veto 降级到此处：不产草稿、不开 checkpoint
+            answer = (
+                "作业初批由助教或主讲教师完成，我已记录你的请求；"
+                "正式成绩须经主讲教师审批后才会录入。你也可以先查询作业状态或评分标准。"
+            )
+            signals = ["grading_request_forwarded", "deterministic"]
+        elif intent == "grade_appeal":
+            # 纵深防御：高风险 workflow 若被任何路径降级到 deterministic，
+            # 仍给稳定的转人工话术，绝不串台到作业查询或编造结果
+            answer = "已收到你的申诉，将转交主讲教师复核。申诉期间原判定暂缓执行。"
+            signals = ["workflow_human", "needs_human_approval", "deterministic"]
+        elif intent == "academic_integrity_question":
+            answer = "已记录学术不端相关疑问，将转交主讲教师复核证据。系统不自动处分。"
+            signals = ["workflow_human", "needs_human_approval", "deterministic"]
         elif intent == "low_confidence_query":
             answer = "我没太理解你的问题，能否补充一下是查作业状态、查 rubric，还是请求批改？"
             signals = ["low_confidence", "deterministic_fallback", "ask_clarification"]

@@ -10,7 +10,9 @@ import re
 from typing import Any, Optional
 
 from rag.build_index import Chunk, get_index_builder
+from rag.cache import RetrievalCache
 from rag.embedding import get_embedding
+from rag.rerank import Reranker
 
 # intent → 索引域路由表
 RAG_ROUTE_MAP: dict[str, list[str]] = {
@@ -46,18 +48,29 @@ def _keyword_score(query: str, text: str) -> float:
 
 
 class HybridRetriever:
-    """向量 + 关键词 hybrid 召回，RRF 融合。"""
+    """向量 + 关键词 hybrid 召回，RRF 融合，再按来源权重重排。
+
+    实例级 RetrievalCache：同 (intent, query) 重复查询直接命中缓存，
+    返回 (results, cache_hit)；命中时 loop 在 respond 阶段跳过最终模型。
+    """
 
     def __init__(self, top_k: int = 5) -> None:
         self.top_k = top_k
         self._index = get_index_builder().get_index()
+        self._cache = RetrievalCache()
+        self._reranker = Reranker()
 
-    def retrieve(self, query: str, intent: str) -> list[dict[str, Any]]:
-        """按 intent 路由域，返回召回结果列表。"""
+    def retrieve(self, query: str, intent: str) -> tuple[list[dict[str, Any]], bool]:
+        """按 intent 路由域，返回 (召回结果列表, cache_hit)。"""
+        # 1. 实例级检索缓存：先查缓存（key = sha16(intent::query)）
+        cached = self._cache.get(query, intent)
+        if cached is not None:
+            return list(cached), True
+
         domains = RAG_ROUTE_MAP.get(intent, [])
         if not domains:
             # 直挂域：不向量召回，只返回 pinned citation
-            return [
+            results = [
                 {
                     "chunk_id": PINNED_DOMAIN,
                     "text": "",
@@ -67,13 +80,16 @@ class HybridRetriever:
                     "metadata": {"policy_id": "academic_integrity", "scene_key": "policy"},
                 }
             ]
+            self._cache.set(query, intent, results)
+            return results, False
 
         # 收集目标域内所有 chunk
         candidates: list[Chunk] = []
         for d in domains:
             candidates.extend(self._index.get(d, []))
         if not candidates:
-            return []
+            self._cache.set(query, intent, [])
+            return [], False
 
         # 向量召回
         q_vec = get_embedding(query)
@@ -95,10 +111,10 @@ class HybridRetriever:
 
         chunk_by_id = {c.chunk_id: c for c in candidates}
         fused_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)
-        results: list[dict[str, Any]] = []
-        for cid in fused_ids[: self.top_k]:
+        fused: list[dict[str, Any]] = []
+        for cid in fused_ids:
             c = chunk_by_id[cid]
-            results.append(
+            fused.append(
                 {
                     "chunk_id": c.chunk_id,
                     "text": c.text,
@@ -108,4 +124,9 @@ class HybridRetriever:
                     "metadata": c.metadata,
                 }
             )
-        return results
+
+        # RRF 融合后、取 top_k 前，按来源权重重排（带 rerank_score）
+        results = self._reranker.rerank(fused, top_k=self.top_k)
+
+        self._cache.set(query, intent, results)
+        return results, False
