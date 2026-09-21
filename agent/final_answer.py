@@ -94,6 +94,7 @@ class FinalAnswerComposer:
         trace_events: Optional[list[dict[str, Any]]] = None,
         grading_draft: Optional[GradingDraft] = None,
         cache_hit: bool = False,
+        batch_state: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         intent = route_plan.intent
         route_kind = route_plan.route_kind
@@ -131,9 +132,9 @@ class FinalAnswerComposer:
         if route_kind == "rag":
             return self._rag_answer(route_plan, rag_results, tainted, cache_hit=cache_hit)
 
-        # task_planner 由 batch 结果直答
+        # task_planner 由 batch 结果直答（确定性模板，不调最终模型）
         if route_kind == "task_planner":
-            return self._deterministic(intent, route_plan, tool_results, rag_results)
+            return self._batch_answer(batch_state)
 
         return self._deterministic(intent, route_plan, tool_results, rag_results)
 
@@ -220,6 +221,13 @@ class FinalAnswerComposer:
     def _workflow(self, intent: str, rag_results: list[dict[str, Any]]) -> dict[str, Any]:
         if intent == "grade_appeal":
             answer = "已收到你的申诉，将转交主讲教师复核。申诉期间原判定暂缓执行。"
+        elif intent == "deferred_exam_query":
+            # 缓考正式申请（loop 内由"申请/提交/推荐"升级而来）：
+            # 对应 recommend_deferred_exam 提案，话术不与学术不端串台
+            answer = (
+                "已收到缓考正式申请，将转交主讲教师审批推荐；"
+                "审批通过前不会变更任何考试安排。"
+            )
         else:
             answer = "已记录学术不端相关疑问，将转交主讲教师复核证据。系统不自动处分。"
         return {
@@ -333,6 +341,31 @@ class FinalAnswerComposer:
         }
 
     # ------------------------------------------------------------------
+    def _batch_answer(self, batch_state: Optional[dict[str, Any]]) -> dict[str, Any]:
+        """task_planner 批量初批的确定性直答（skip final model）。"""
+        if not batch_state or batch_state.get("state") == "denied":
+            answer = "批量初批未执行：该请求已被权限规则拦截，仅助教 / 主讲教师可发起。"
+            signals = ["batch_denied", "deterministic"]
+        else:
+            answer = (
+                f"批量初批完成：共 {batch_state.get('total', 0)} 份，"
+                f"已处理 {batch_state.get('processed', 0)} 份，"
+                f"失败 {batch_state.get('failed', 0)} 份；"
+                f"分片 {batch_state.get('processed_shards', 0)}/{batch_state.get('total_shards', 0)}。"
+                "每份草稿仍需主讲教师审批后才会录入成绩。"
+            )
+            signals = ["batch_grading", "task_planner", "deterministic"]
+        return {
+            "answer": answer,
+            "signals": signals,
+            "grading_draft": None,
+            "proposal": None,
+            "skip_reason": "deterministic_short_circuit",
+            "next_action": "answer_user",
+            "needs_human_approval": False,
+            "citations": [],
+        }
+
     def _blocked(self) -> dict[str, Any]:
         return {
             "answer": "该请求已被安全策略拦截，如需帮助请联系主讲教师或助教。",

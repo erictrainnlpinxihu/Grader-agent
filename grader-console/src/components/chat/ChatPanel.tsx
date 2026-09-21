@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Input, Button, Spin, Message } from '@arco-design/web-react';
 import { sendChat } from '../../api/chat';
-import { useSession } from '../../store/session';
+import { defaultUserId, useSession } from '../../store/session';
+import type { ChatRequest } from '../../api/types';
 import type { ExampleQuestion } from '../../examples/questions';
 import { ExampleQuestions } from './ExampleQuestions';
 import { MessageBubble } from './MessageBubble';
@@ -17,7 +18,11 @@ export function ChatPanel() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
 
-  async function run(text: string, claimedRole?: string) {
+  async function run(
+    text: string,
+    claimedRole?: string,
+    ctxOverride?: Partial<Omit<ChatRequest, 'text'>>,
+  ) {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
     setLoading(true);
@@ -25,6 +30,7 @@ export function ChatPanel() {
     try {
       const resp = await sendChat({
         ...ctx,
+        ...ctxOverride,
         session_id: sessionId,
         text: trimmed,
         ...(claimedRole ? { claimed_role: claimedRole } : {}),
@@ -38,9 +44,18 @@ export function ChatPanel() {
     }
   }
 
-  function handlePick(q: ExampleQuestion) {
-    if (q.role) setRole(q.role);
-    run(q.text, (q as { claimed_role?: string }).claimed_role);
+  async function handlePick(q: ExampleQuestion) {
+    // 点击示例自动切角色；setState 是异步的，本次请求要用 override 立即生效，
+    // 否则会拿旧角色发出去（stale closure）。
+    let override: Partial<Omit<ChatRequest, 'text'>> | undefined;
+    if (q.role && q.role !== ctx.role) {
+      setRole(q.role);
+      override = { role: q.role, user_id: defaultUserId(q.role) };
+    }
+    // 多轮综合场景：按顺序依次发送，每轮等待响应后再发下一轮
+    for (const t of q.texts ?? [q.text]) {
+      await run(t, q.claimed_role, override);
+    }
   }
 
   return (

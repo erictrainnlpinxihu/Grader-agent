@@ -2,6 +2,7 @@ import { Tag } from '@arco-design/web-react';
 import { useSession, type Turn } from '../../store/session';
 import type { ApprovalResponse, ChatResponse } from '../../api/types';
 import { ApprovalCard } from '../approval/ApprovalCard';
+import { ROUTE_COLOR, signalColor, signalHint } from '../trace/tagColors';
 
 interface Props {
   turn: Turn;
@@ -56,9 +57,13 @@ export function MessageBubble({ turn, sessionId }: Props) {
           {resp.answer}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          <Tag size="small" color="blue">{resp.route_kind}</Tag>
+          <span title={'路线种类（颜色语义见右栏「本次决策」图例）'}>
+            <Tag size="small" color={ROUTE_COLOR[resp.route_kind] ?? 'gray'}>{resp.route_kind}</Tag>
+          </span>
           {resp.signals.map((s) => (
-            <Tag key={s} size="small" color="gray">{s}</Tag>
+            <span key={s} title={signalHint(s)}>
+              <Tag size="small" color={signalColor(s)}>{s}</Tag>
+            </span>
           ))}
         </div>
       </div>

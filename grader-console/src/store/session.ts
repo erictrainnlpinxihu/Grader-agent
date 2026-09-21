@@ -12,7 +12,7 @@ function newSessionId() {
   return `sess-${Date.now().toString(36)}`;
 }
 
-function defaultUserId(role: Role): string {
+export function defaultUserId(role: Role): string {
   if (role === 'instructor') return 'ins-001';
   if (role === 'ta') return 'ta-001';
   return 'stu-001';

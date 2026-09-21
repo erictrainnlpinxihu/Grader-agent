@@ -219,6 +219,7 @@ class GraderAgent:
         # ---------- 5. respond ----------
         composed = self.final_composer.compose(
             route_plan, rt, tool_results, rag_results, cache_hit=rag_cache_hit,
+            batch_state=batch_state,
         )
 
         # RAG 缓存命中：respond 阶段跳过最终模型润色（离线本就不走模型，

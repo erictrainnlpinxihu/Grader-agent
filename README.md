@@ -1,11 +1,6 @@
 # Grader · 不越权、不手软、不替老师拍板的初批助教
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Eval](https://img.shields.io/badge/offline%20eval-21%20cases-orange)
-![Offline](https://img.shields.io/badge/offline--ready-three%20switches-yellow)
-![Pydantic](https://img.shields.io/badge/Pydantic-v2-red)
-![HITL](https://img.shields.io/badge/HITL-three%20gates-critical)
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Eval](https://img.shields.io/badge/offline%20eval-21%20cases-orange) ![Offline](https://img.shields.io/badge/offline--ready-three%20switches-yellow) ![Pydantic](https://img.shields.io/badge/Pydantic-v2-red) ![HITL](https://img.shields.io/badge/HITL-three%20gates-critical)
 
 > **一个带"夜班助教"自觉的作业初批 Agent 教学骨架：不越权、不手软、不替老师拍板。**
 >

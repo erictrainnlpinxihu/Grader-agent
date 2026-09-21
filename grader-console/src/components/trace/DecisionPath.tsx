@@ -5,16 +5,18 @@ import { ToolCallCard } from './ToolCallCard';
 import { LoopCounter } from './LoopCounter';
 import { RagPanel } from './RagPanel';
 import { GradingDraftView } from '../grading/GradingDraftView';
+import { ROUTE_COLOR, signalColor, signalHint } from './tagColors';
 
-const ROUTE_COLOR: Record<string, string> = {
-  tool_readonly: 'blue',
-  rag: 'cyan',
-  workflow_human: 'purple',
-  deterministic: 'gray',
-  deterministic_fallback: 'orange',
-  deterministic_block: 'red',
-  task_planner: 'arcoblue',
-};
+/** 标签颜色图例：与 tagColors.ts 的语义一一对应 */
+const LEGEND: { color: string; text: string }[] = [
+  { color: 'red', text: '拦截' },
+  { color: 'purple', text: '转人工' },
+  { color: 'gold', text: '待审批' },
+  { color: 'cyan', text: '检索命中' },
+  { color: 'blue', text: '正常执行' },
+  { color: 'orange', text: '降级/兜底' },
+  { color: 'gray', text: '中性状态' },
+];
 
 export function DecisionPath({ resp }: { resp: ChatResponse | null }) {
   if (!resp) {
@@ -28,17 +30,34 @@ export function DecisionPath({ resp }: { resp: ChatResponse | null }) {
       <div className="detail-card">
         <div className="head">
           <strong>本次决策</strong>
-          <Tag color={ROUTE_COLOR[resp.route_kind] ?? 'gray'}>{resp.route_kind}</Tag>
-          <Tag size="small" color="gray">{resp.intent}</Tag>
-          <LoopCounter count={toolCalls.length} />
+          <span title="路线种类：这次请求走的执行路线（7 选 1）">
+            <Tag color={ROUTE_COLOR[resp.route_kind] ?? 'gray'}>{resp.route_kind}</Tag>
+          </span>
+          <span title="语义意图：系统理解出的用户诉求（12 选 1）">
+            <Tag size="small" color="gray">{resp.intent}</Tag>
+          </span>
+          <span title="只读工具回路的循环次数，达到上限 6 会强制停止（红色）">
+            <LoopCounter count={toolCalls.length} />
+          </span>
         </div>
         {resp.signals.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {resp.signals.map((s) => (
-              <Tag key={s} size="small" color="gray">{s}</Tag>
+              <span key={s} title={signalHint(s)}>
+                <Tag size="small" color={signalColor(s)}>{s}</Tag>
+              </span>
             ))}
           </div>
         )}
+        <div className="small muted" style={{ marginTop: 8, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span>颜色图例：</span>
+          {LEGEND.map((l) => (
+            <span key={l.text} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Tag size="small" color={l.color} style={{ margin: 0 }}>{l.text}</Tag>
+            </span>
+          ))}
+          <span>（悬停标签可看含义）</span>
+        </div>
       </div>
 
       <StageTimeline resp={resp} />
