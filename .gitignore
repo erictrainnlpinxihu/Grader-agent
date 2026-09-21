@@ -1,6 +1,7 @@
 .env
 __pycache__
 .DS_Store
+*.egg-info/
 
 # grader-console 前端依赖与构建产物（不入 git）
 grader-console/node_modules/
