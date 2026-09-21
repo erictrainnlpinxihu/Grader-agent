@@ -25,6 +25,7 @@
 | [**Harness 设计** `docs/harness.md`](docs/harness.md) | rule_guard / rule_veto、三级权限、source_guard 防注入、ApprovalGate 状态机与恢复三闸、ContextBuilder 信任序、trace 脱敏、成本边界、prompt registry |
 | [**工程实现** `docs/engineering.md`](docs/engineering.md) | 五域目录、Pydantic 契约、双轨与配置、缓存与成本、持久化缺口、**21 case 评测体系**、术语表、Roadmap、**当前能力与预期强化路线** |
 | [HTTP API `docs/api.md`](docs/api.md) | 8 个端点的请求/响应字段与可直接复制的 curl |
+| [**前端控制台** `docs/frontend-design.md`](docs/frontend-design.md) | React 调试控制台（`grader-console/`）设计与实现：决策路径渲染、HITL 审批交互、Eval 回归逐 case 链路回放、首页链路简介 |
 | [工程指南 `CLAUDE.md`](./CLAUDE.md) | 面向 agentic coding 的实现约定、里程碑与安全红线 |
 
 ---
@@ -94,6 +95,14 @@ GRADER_DISABLE_LLM=1 GRADER_OFFLINE_RAG=1 GRADER_OFFLINE_FACTS=1 \
 ```
 
 完整安装、在线配置（OpenAI 兼容模型 / embedding / LMS）、环境变量与种子 ID 见 [快速开始](docs/getting_started.md)；请求体、响应字段与 curl 见 [HTTP API](docs/api.md)。
+
+不想读 JSON？起一个**前端调试控制台**，把五阶段链路、工具调用、RAG 引用、HITL 审批和 Eval 回归画出来看：
+
+```bash
+cd grader-console && npm install && npm run dev   # http://localhost:5173，/api 已代理到 :8000
+```
+
+页面结构、交互设计与契约对齐见 [前端控制台设计](docs/frontend-design.md)。
 
 ---
 

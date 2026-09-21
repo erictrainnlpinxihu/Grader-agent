@@ -1,0 +1,124 @@
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue',
+    'Microsoft YaHei', Arial, sans-serif;
+  font-size: var(--fs-base);
+  color: var(--clr-text-1);
+  background: var(--clr-bg-page);
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-small);
+}
+
+.card {
+  background: var(--clr-bg-card);
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-card);
+}
+
+.muted {
+  color: var(--clr-text-3);
+}
+
+.small {
+  font-size: var(--fs-small);
+}
+
+/* 三栏调试台 */
+.console-grid {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  gap: var(--space-4);
+  height: 100%;
+  padding: var(--space-4);
+}
+
+@media (max-width: 1100px) {
+  .console-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.scroll-area {
+  overflow-y: auto;
+}
+
+/* 决策路径节点 */
+.stage-node {
+  display: flex;
+  gap: var(--space-3);
+}
+.stage-node .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: none;
+  border: 2px solid var(--clr-primary);
+  background: #fff;
+}
+.stage-node.done .dot {
+  background: var(--clr-primary);
+}
+.stage-node.current .dot {
+  box-shadow: 0 0 0 4px var(--clr-primary-light);
+}
+
+/* 工具 / RAG 卡片 */
+.detail-card {
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: #fff;
+}
+.detail-card .head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+/* 状态机步骤条 */
+.sm-flow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.sm-node {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--clr-border);
+  font-size: var(--fs-small);
+  color: var(--clr-text-2);
+  background: #fff;
+}
+.sm-node.active {
+  background: var(--clr-primary);
+  border-color: var(--clr-primary);
+  color: #fff;
+}
+.sm-node.reached {
+  border-color: var(--clr-primary);
+  color: var(--clr-primary);
+}
+.sm-arrow {
+  color: var(--clr-text-4);
+}

@@ -1,2 +1,14 @@
 .env
 __pycache__
+.DS_Store
+
+# grader-console 前端依赖与构建产物（不入 git）
+grader-console/node_modules/
+grader-console/dist/
+grader-console/dist-ssr/
+grader-console/.vite/
+grader-console/coverage/
+grader-console/*.local
+grader-console/*.tsbuildinfo
+grader-console/npm-debug.log*
+grader-console/yarn-error.log*

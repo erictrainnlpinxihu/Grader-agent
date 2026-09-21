@@ -1,0 +1,37 @@
+:root {
+  /* 主色 —— 飞书蓝 */
+  --clr-primary: #3370ff;
+  --clr-primary-hover: #245bdb;
+  --clr-primary-active: #1f4fcb;
+  --clr-primary-light: #e1eaff;
+
+  /* 中性色 */
+  --clr-bg-page: #f5f6f7;
+  --clr-bg-card: #ffffff;
+  --clr-border: #e5e6eb;
+  --clr-border-light: #f0f1f3;
+  --clr-text-1: #1f2329;
+  --clr-text-2: #4e5969;
+  --clr-text-3: #86909c;
+  --clr-text-4: #c9cdd4;
+
+  /* 语义色 */
+  --clr-success: #00b42a;
+  --clr-warning: #ff7d00;
+  --clr-danger: #f53f3f;
+  --clr-info: #3491fa;
+  --clr-purple: #722ed1;
+
+  /* 圆角 / 间距 / 字号 */
+  --radius-card: 6px;
+  --radius-btn: 4px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --fs-base: 14px;
+  --fs-small: 12px;
+  --fs-title: 16px;
+}

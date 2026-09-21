@@ -89,6 +89,21 @@ class EvalRunner:
     def _fresh_agent(self) -> GraderAgent:
         return GraderAgent()
 
+    @staticmethod
+    def _public_response(
+        resp: dict[str, Any],
+        all_trace_events: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """把一次 chat/resume 响应裁剪为可对外回放链路的形式。
+
+        只包含后端本就公开的字段（trace 已在 harness/trace.py 递归脱敏），
+        剔除 ``_`` 前缀的内部聚合键；不含 hidden CoT。
+        """
+        pub = {k: v for k, v in resp.items() if not k.startswith("_")}
+        if all_trace_events is not None:
+            pub["trace_events"] = all_trace_events
+        return pub
+
     def _run_chat_case(self, case: dict[str, Any]) -> dict[str, Any]:
         rt = case["input"]["runtime_context"]
         messages = case["input"]["user_messages"]
@@ -101,6 +116,8 @@ class EvalRunner:
             all_trace_events.extend(last.get("trace_events", []))
         last["_all_trace_events"] = all_trace_events
         result = self._assert(case, last, agent)
+        # 公开响应 + 多轮聚合 trace，供前端 Eval 页回放决策链路
+        result["response"] = self._public_response(last, all_trace_events)
 
         # byte_identical_runs：离线连跑 N 次，actual_answer 字节级一致才 pass。
         # 用于 degradation 等确定性话术的可复现性回归。
@@ -177,6 +194,8 @@ class EvalRunner:
             "case_id": case["case_id"],
             "passed": passed,
             "details": results,
+            # start 轮（发起审批）的公开响应，供前端回放链路
+            "response": self._public_response(start_resp) if start_resp else None,
         }
 
     # ------------------------------------------------------------------
@@ -211,7 +230,14 @@ class EvalRunner:
             )
             self._restore_fixture(sa)
             ok = rr.get("status") == "blocked" and rr.get("reason") == "business_fact_drift"
-            out.append({"subscene": sub["name"], "passed": ok, "result": rr})
+            out.append(
+                {
+                    "subscene": sub["name"],
+                    "passed": ok,
+                    "result": rr,
+                    "response": self._public_response(sr),
+                }
+            )
         return {
             "case_id": case["case_id"],
             "passed": all(o["passed"] for o in out),
@@ -225,17 +251,20 @@ class EvalRunner:
         score_regex = case.get("score_regex", r"总分\s*([0-9.]+)")
         max_var = float(case.get("max_variance", 2))
         scores: list[float] = []
+        last_resp: dict[str, Any] = {}
         for run in case.get("runs", [{}, {}]):
             agent = self._fresh_agent()
             payload = dict(rt)
             payload.update(run.get("identity_override", {}))
             resp = agent.chat(self._chat_payload(payload, msg, f"{case['case_id']}-run"))
+            last_resp = resp
             m = re.search(score_regex, resp.get("answer", ""))
             if not m:
                 return {
                     "case_id": case["case_id"],
                     "passed": False,
                     "reason": f"score_regex no match: {resp.get('answer','')[:80]}",
+                    "response": self._public_response(resp),
                 }
             scores.append(float(m.group(1)))
         variance = abs(scores[0] - scores[1])
@@ -243,6 +272,7 @@ class EvalRunner:
             "case_id": case["case_id"],
             "passed": variance <= max_var,
             "details": {"scores": scores, "variance": variance, "max_variance": max_var},
+            "response": self._public_response(last_resp) if last_resp else None,
         }
 
     # ------------------------------------------------------------------
