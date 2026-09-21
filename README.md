@@ -100,6 +100,19 @@ cd grader-console && npm install && npm run dev   # http://localhost:5173，/api
 页面结构、交互设计与契约对齐见 [前端控制台设计](docs/frontend-design.md)。
 
 ---
+- RAG示例：
+![示例图片](./pictures/p1.png)
+---
+- HITL示例：
+![示例图片](./pictures/p2.png)
+---
+- checkpoint & resume：
+![示例图片](./pictures/p3.png)
+---
+- Eval回归示例：
+![示例图片](./pictures/p4.png)
+
+---
 
 ## 免责声明
 
