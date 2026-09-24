@@ -31,6 +31,9 @@ class LLMClient:
         self.disabled = llm_disabled()
         self._llm: Any = None
         self._llm_text: Any = None
+        # 真实在线调用计数（离线 / 缺 key 的短路返回不计），供成本记账读取。
+        # 进程级单例累计，调用方按"请求前后差值"取本请求的真实调用数。
+        self.calls = 0
 
     # ------------------------------------------------------------------
     def _base_url(self) -> str:
@@ -68,6 +71,7 @@ class LLMClient:
             # 无 key 时不硬报错，降级离线（安全边界：不因为缺 key 跳过 guard）
             return None
         llm = self._build_llm(temperature=0.0)
+        self.calls += 1
         try:
             bound = llm.with_structured_output(pydantic_model)
             return bound.invoke(prompt)
@@ -81,6 +85,7 @@ class LLMClient:
         if not self._api_key():
             return None
         llm = self._build_llm(temperature=0.0)
+        self.calls += 1
         try:
             resp = llm.invoke([("system", system), ("human", user)])
             return getattr(resp, "content", str(resp))

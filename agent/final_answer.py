@@ -25,6 +25,7 @@ from harness.contracts import (
     RuntimeContext,
 )
 from harness.prompts.loader import render_system_prompt
+from harness.source_guard import UNTRUSTED, inspect_source
 
 
 def _sha(text: str) -> str:
@@ -95,6 +96,7 @@ class FinalAnswerComposer:
         grading_draft: Optional[GradingDraft] = None,
         cache_hit: bool = False,
         batch_state: Optional[dict[str, Any]] = None,
+        context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         intent = route_plan.intent
         route_kind = route_plan.route_kind
@@ -130,7 +132,9 @@ class FinalAnswerComposer:
 
         # rag 分支
         if route_kind == "rag":
-            return self._rag_answer(route_plan, rag_results, tainted, cache_hit=cache_hit)
+            return self._rag_answer(
+                route_plan, rag_results, tainted, cache_hit=cache_hit, context=context
+            )
 
         # task_planner 由 batch 结果直答（确定性模板，不调最终模型）
         if route_kind == "task_planner":
@@ -141,6 +145,29 @@ class FinalAnswerComposer:
     # ------------------------------------------------------------------
     # grading_request
     # ------------------------------------------------------------------
+    def _structured_draft(
+        self,
+        sub: dict[str, Any],
+        rubric: dict[str, Any],
+    ) -> Optional[GradingDraft]:
+        """在线结构化初批：llm.structured(GradingDraft) 逐 rubric 条目打分。
+
+        作业正文是 Untrusted 输入：命中注入正则时整段不进模型 prompt
+        （skip #5 tainted_source_redacted），直接返回 None 走确定性打分；
+        离线模式 / 结构化解析失败同样返回 None。
+        """
+        body = sub.get("body", "")
+        safety = inspect_source("submission_body", body, UNTRUSTED)
+        if safety["tainted"]:
+            return None
+        prompt = (
+            "你是作业初批助教。按 rubric 逐条打分：每条给 score（不超过 max_score）、"
+            "一句理由；总分 overall_score 为各条目之和；引用的作业段落填前 200 字。"
+            f"rubric：{rubric.get('items', [])}。作业正文：{body[:2000]}"
+        )
+        online = self.llm.structured(GradingDraft, prompt)
+        return online if isinstance(online, GradingDraft) else None
+
     def _grading(
         self,
         route_plan: RoutePlanCandidate,
@@ -160,6 +187,10 @@ class FinalAnswerComposer:
             (t["result"] for t in tool_results if t["tool_name"] == "check_similarity"),
             {},
         )
+        if grading_draft is None:
+            # 在线主路径：with_structured_output(GradingDraft) 结构化初批；
+            # 正文命中注入 / 离线 / 解析失败均返回 None，回落确定性打分。
+            grading_draft = self._structured_draft(sub, rubric)
         if grading_draft is None:
             body = sub.get("body", "")
             items = deterministic_score(body, rubric.get("items", []))
@@ -248,6 +279,7 @@ class FinalAnswerComposer:
         rag_results: list[dict[str, Any]],
         tainted: bool,
         cache_hit: bool = False,
+        context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         if not rag_results:
             return self._tool_empty()
@@ -260,9 +292,18 @@ class FinalAnswerComposer:
             answer = "[tainted-source-redacted] " + answer
         # 缓存命中或离线：跳过最终模型润色，直接用确定性模板
         if not cache_hit:
+            user_prompt = f"基于以下检索结果作答，不要编造：{rag_results[:2]}"
+            # 消费 observe 组装并脱敏后的上下文：会话实体（当前作业 / 提交）
+            # 让最终模型的回答与当前会话一致，而非只看检索片段
+            if context is not None:
+                entities = {
+                    k: v for k, v in (context.get("memory") or {}).items() if v
+                }
+                if entities:
+                    user_prompt += f"；当前会话实体：{entities}"
             online = self.llm.generate(
                 render_system_prompt({"needs_rag": True, "route_kind": "rag"}),
-                f"基于以下检索结果作答，不要编造：{rag_results[:2]}",
+                user_prompt,
             )
             if online:
                 answer = online

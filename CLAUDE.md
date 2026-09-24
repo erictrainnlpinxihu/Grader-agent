@@ -271,10 +271,10 @@ grader/
 ├── docs/                         # 面向使用者的文档（与本文件的工程契约互补）
 │   ├── getting_started.md       # 安装 / .env 与 GRADER_* 环境变量 / 离线三开关 / 启动 / FAQ
 │   ├── api.md                    # 8 端点完整 HTTP 契约、字段表、curl 示例（HTTP 契约以此为准）
-│   ├── agent.md                  # Agent 模型回路专题（五阶段主 loop 总—分、三层循环逐层图）
-│   ├── rag.md                    # RAG 检索专题（4+1 知识域、hybrid、缓存、双轨 embedding）
-│   ├── harness.md                # Harness 安全骨架专题（权限/守卫/ApprovalGate/信任序/可观测）
-│   └── engineering.md            # 工程专题（目录、配置、缓存、双轨、接线清单）
+│   ├── agent.md                  # Agent 模型回路专题（五阶段业务叙事、QueryRewrite、会话与 checkpoint/resume）
+│   ├── rag.md                    # RAG 检索专题（4+1 知识域、切片、检索原理、rerank 双轨、缓存）
+│   ├── harness.md                # Harness 安全骨架专题（控制点地图、权限/守卫/ApprovalGate/信任序/可观测）
+│   └── engineering.md            # 生产化升级方案（Milvus、持久化、批量任务化、LMS 写路径等未实现项）
 ├── configs/                      # .env.example / grader_manifest.json（/manifest 自描述）/ seed_data.json（LMS mock）
 ├── tests/                        # 单元测试
 ├── pyproject.toml               # 项目依赖与元数据
@@ -438,7 +438,7 @@ class BatchState(TypedDict):
 
 ### 6.6 配置与环境变量
 
-Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到端跑通主链路并断言行为；在线/离线由以下 9 个 `GRADER_*` 变量切换（安装与逐变量用法见 `docs/getting_started.md`）。
+Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到端跑通主链路并断言行为；在线/离线由以下 10 个 `GRADER_*` 变量切换（安装与逐变量用法见 `docs/getting_started.md`）。
 
 **`.env` 自动加载**：`harness/config.py` 在首次 import 业务模块（启动服务 / 跑 eval）时自动执行一次 `load_dotenv()`，从当前工作目录向上逐级查找第一个 `.env`，用 `os.environ.setdefault` 注入。优先级为 **shell 已导出的环境变量 ＞ `.env` ＞ 代码默认值**——`.env` 只填补缺失项，不覆盖 shell 里已有的同名变量；命令行前缀（如 `GRADER_DISABLE_LLM=1 python ...`）同样优先。可用 `GRADER_ENV_FILE` 指定 `.env` 路径（该变量决定 `.env` 自身位置，只能在 shell 给定）。加载器无第三方依赖，支持 `#` 注释、`export ` 前缀与成对引号，但不做 `${VAR}` 插值、不做热更新（改 `.env` 需重启）。`agent/llm.py`、`rag/embedding.py`、`harness/lms_client.py` 顶部 `import harness.config`，保证任何单例构造前变量已注入。
 
@@ -451,6 +451,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 | `GRADER_LLM_BASE_URL` | OpenAI 兼容模型服务地址 | `https://api.siliconflow.cn/v1` |
 | `GRADER_LLM_MODEL` | 聊天模型名 | `Qwen/Qwen3-8B` |
 | `GRADER_EMBEDDING_MODEL` | Embedding 模型名 | `BAAI/bge-m3` |
+| `GRADER_RERANK_MODEL` | 在线重排模型名（`POST {GRADER_LLM_BASE_URL}/rerank`；离线走确定性来源权重） | `BAAI/bge-reranker-v2-m3` |
 | `GRADER_LMS_BASE_URL` | LMS API 基址（只读客户端） | `https://lms.example.com/api` |
 | `GRADER_LMS_SERVICE_TOKEN` | LMS 委派服务令牌（请求头 `X-Grader-Service-Token`） | `dev-token` |
 

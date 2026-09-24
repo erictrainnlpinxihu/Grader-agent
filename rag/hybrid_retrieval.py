@@ -125,8 +125,9 @@ class HybridRetriever:
                 }
             )
 
-        # RRF 融合后、取 top_k 前，按来源权重重排（带 rerank_score）
-        results = self._reranker.rerank(fused, top_k=self.top_k)
+        # RRF 融合后、取 top_k 前，做相关性重排：
+        # 在线 rerank API（relevance × 来源权重），离线/失败确定性（rrf × 来源权重）
+        results = self._reranker.rerank(fused, top_k=self.top_k, query=query)
 
         self._cache.set(query, intent, results)
         return results, False

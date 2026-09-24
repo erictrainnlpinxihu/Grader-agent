@@ -11,12 +11,14 @@ from typing import Any, Optional
 from agent.batch_mapreduce import BatchGrader
 from agent.final_answer import FinalAnswerComposer
 from agent.intent_router import IntentRouter
+from agent.llm import get_llm_client
 from agent.query_rewrite import QueryRewriter
 from agent.react_loop import ReActLoop
 from harness.approval_gate import ApprovalGate
 from harness.context_builder import ContextBuilder
 from harness.contracts import HighRiskProposal, RuntimeContext
 from harness.cost import CostGovernor
+from harness.hooks import HookManager
 from harness.lms_client import LMSClient
 from harness.permissions import PermissionError
 from harness.source_guard import UNTRUSTED, inspect_source
@@ -80,6 +82,10 @@ class GraderAgent:
         text = request.get("text", "")
 
         # ---------- 1. perceive ----------
+        # 每请求一套 hooks（工具前后 / 错误 / 完成事件进 trace）；成本按
+        # LLM 单例计数器的请求前后差值取本请求真实模型调用数。
+        hooks = HookManager(self.trace_store)
+        llm_calls_start = get_llm_client().calls
         rt = self._build_runtime_context(request)
         safety = inspect_source("user_message", text, UNTRUSTED)
         self.trace_store.add(
@@ -115,6 +121,8 @@ class GraderAgent:
                     "intent": route_plan.intent,
                     "route_kind": route_plan.route_kind,
                     "confidence": route_plan.confidence,
+                    "source": route_plan.source,
+                    "candidate_applied": route_plan.source == "llm_with_policy_constraints",
                 },
             )
         )
@@ -139,7 +147,9 @@ class GraderAgent:
 
         try:
             if route_plan.route_kind == "tool_readonly":
-                react = self.react_loop.run(route_plan, rt, tool_args)
+                react = self.react_loop.run(
+                    route_plan, rt, tool_args, hooks=hooks, session_id=session_id
+                )
                 tool_results = react["tool_results"]
                 tool_obs = react["observations"]
                 self.trace_store.add(
@@ -212,14 +222,30 @@ class GraderAgent:
             rag_results=rag_results,
             memory=mem,
         )
+        # context_report：本轮上下文用了哪些来源、冲突如何裁定，写入公开 trace
+        self.trace_store.add(
+            make_event(
+                "context_report",
+                session_id,
+                {
+                    "trust_order": observe_ctx.get("trust_order"),
+                    "conflicts": observe_ctx.get("conflicts"),
+                    "history_items": len(observe_ctx.get("history", [])),
+                    "tool_facts": len(tool_results),
+                    "rag_chunks": len(rag_results),
+                },
+            )
+        )
         cost_summary = self.cost.build_cost_summary(
-            tool_calls=len(tool_results), llm_calls=0, tokens=len(text)
+            tool_calls=len(tool_results),
+            llm_calls=get_llm_client().calls - llm_calls_start,
+            tokens=len(text),
         )
 
         # ---------- 5. respond ----------
         composed = self.final_composer.compose(
             route_plan, rt, tool_results, rag_results, cache_hit=rag_cache_hit,
-            batch_state=batch_state,
+            batch_state=batch_state, context=observe_ctx,
         )
 
         # RAG 缓存命中：respond 阶段跳过最终模型润色（离线本就不走模型，
@@ -262,6 +288,8 @@ class GraderAgent:
                     "guard_override": guard_meta["guard_override"],
                     "guard_reason": guard_meta["guard_reason"],
                     "confidence": route_plan.confidence,
+                    "source": route_plan.source,
+                    "candidate_applied": route_plan.source == "llm_with_policy_constraints",
                 },
                 "rag": {"cache_hit": rag_cache_hit},
                 "workflow": self._workflow_state(session_id, pending_approval),
@@ -281,6 +309,13 @@ class GraderAgent:
         )
         self._history[session_id].append(
             {"role": "assistant", "content": answer, "type": "assistant_message"}
+        )
+        hooks.fire(
+            "on_completion",
+            session_id=session_id,
+            intent=route_plan.intent,
+            route_kind=route_plan.route_kind,
+            next_action=response.get("next_action", "answer_user"),
         )
         return response
 

@@ -194,14 +194,52 @@ class IntentRouter:
                     "low_confidence_query", "deterministic_fallback",
                     confidence=online.confidence,
                 )
-            # 模型只决定 intent（语义分类）；route_kind / required_tools /
-            # knowledge_domains / risk_level 等"执行计划"一律由确定性映射按
-            # intent 钉死，模型自填的工具（如它发明的 grade_submission）、
-            # 路由类型或风险等级均不采信。这从根上防止模型越权指定写工具。
             if online.intent in _INTENT_SET:
-                return _plan_for_intent(online.intent, runtime_context)
+                base = _plan_for_intent(online.intent, runtime_context)
+                plan = self._apply_candidate(base, online)
+                # 门槛已过：保留模型的真实置信度供 trace / session_state 记录，
+                # 而不是让 _build_plan 的默认值把它归一回 1.0。
+                return plan.model_copy(update={"confidence": online.confidence})
         # 无模型 / 解析失败 / 模型给出越界 intent：回落关键词确定性路由
         return self._offline_route(text, runtime_context)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _apply_candidate(
+        base: RoutePlanCandidate,
+        candidate: RoutePlanCandidate,
+    ) -> RoutePlanCandidate:
+        """混合式编排：在线候选在权威映射的策略约束内细化最终计划。
+
+        对齐参考实现的 ``llm_with_policy_constraints`` 语义：执行分支仍由
+        intent 固定分发（route_kind 必须与权威映射一致），但候选可以细化
+        "怎么执行"——required_tools 可取映射白名单的子集并调整顺序（如初批
+        只查提交 + rubric、跳过历史）、knowledge_domains 可收窄到映射域的
+        子集。任一约束越界（route_kind / 风险不符、工具或域超出映射集合、
+        发明的写动作），整份候选作废，回落权威映射——不采信"部分采纳"。
+
+        候选自填的 source / fallback_policy 等元字段从不采信；来源标记由
+        服务端写入，供 trace / session_state 的 candidate_applied 断言。
+        """
+        if candidate.route_kind != base.route_kind:
+            return base
+        if candidate.risk_level != base.risk_level:
+            return base
+        refined_tools = candidate.required_tools
+        if refined_tools and not set(refined_tools) <= set(base.required_tools):
+            return base
+        refined_domains = candidate.knowledge_domains
+        if refined_domains and not set(refined_domains) <= set(base.knowledge_domains):
+            return base
+        if not refined_tools and not refined_domains:
+            # 无可细化字段（deterministic / workflow 意图）：保持权威映射
+            return base
+        update: dict[str, Any] = {"source": "llm_with_policy_constraints"}
+        if refined_tools:
+            update["required_tools"] = refined_tools
+        if refined_domains:
+            update["knowledge_domains"] = refined_domains
+        return base.model_copy(update=update)
 
     # ------------------------------------------------------------------
     def _offline_route(self, text: str, rt: RuntimeContext) -> RoutePlanCandidate:

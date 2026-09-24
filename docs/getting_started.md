@@ -18,9 +18,9 @@ pip install -e .
 | 依赖 | 用途 |
 |---|---|
 | `fastapi` / `uvicorn` | HTTP 层（`api/main.py`） |
-| `pydantic` v2 | 所有请求/响应/领域契约（`model_validator` 跨字段校验） |
+| `pydantic` v2 | 所有请求 / 响应 / 领域模型的数据校验（`model_validator` 跨字段校验） |
 | `langchain-openai` | 在线模式的 `ChatOpenAI`（结构化输出 / 生成；离线不导入） |
-| `httpx` | LMS 只读客户端与在线 embedding 调用 |
+| `httpx` | LMS 只读客户端与在线 embedding / rerank 调用 |
 | `pyyaml` | `eval/cases.yml` 与 prompts registry 读取 |
 | `pytest` | 单元测试 |
 
@@ -43,6 +43,7 @@ Grader 的设计目标是：**不依赖真实 LLM、不依赖真实 LMS，也能
 | `GRADER_LLM_BASE_URL` | OpenAI 兼容模型服务端点 | `https://api.siliconflow.cn/v1` |
 | `GRADER_LLM_MODEL` | 对话模型名 | `Qwen/Qwen3-8B` |
 | `GRADER_EMBEDDING_MODEL` | embedding 模型名 | `BAAI/bge-m3` |
+| `GRADER_RERANK_MODEL` | 在线重排模型名（`POST {GRADER_LLM_BASE_URL}/rerank`；`GRADER_OFFLINE_RAG=1` 或调用失败时走确定性来源权重重排） | `BAAI/bge-reranker-v2-m3` |
 | `GRADER_LMS_BASE_URL` | 在线 LMS 只读 API 根地址（仅在线事实用） | `https://lms.example.com/api` |
 | `GRADER_LMS_SERVICE_TOKEN` | 委派头 `X-Grader-Service-Token`（仅在线事实用） | `dev-token` |
 
@@ -56,19 +57,24 @@ cp configs/.env.example .env
 - 加载器从当前工作目录**向上逐级**查找第一个 `.env`，所以在项目根或其子目录启动都能命中；
 - 想把配置放在别处，可在 shell 里 `export GRADER_ENV_FILE=/path/your.env` 指定（该变量决定 `.env` 自身的位置，必须由 shell 给定）；
 - shell 里已经 `export` 的同名变量优先级更高、不会被 `.env` 覆盖；命令行前缀（如 `GRADER_DISABLE_LLM=1 python ...`）同样优先；
-- 支持 `#` 注释、`export ` 前缀与成对单 / 双引号；修改 `.env` 后需**重启进程**生效（不做热更新）。
+- 支持 `#` 注释、`export` 前缀与成对单 / 双引号；修改 `.env` 后需**重启进程**生效（不做热更新）。
 
-`GRADER_FIXED_DATE`（固定基准日期）是预留的演进项、尚未实现，也未放进示例文件；需要复现时间相关 case 时请在系统层固定日期（见 [工程专题 Roadmap](./engineering.md#10-roadmap)）。
+`GRADER_FIXED_DATE`（固定基准日期）是预留的演进项、尚未实现，也未放进示例文件；需要复现时间相关 case 时请在系统层固定日期（见 [生产化升级方案](./engineering.md#6-模型回路强化)）。
 
 ---
 
-## 3. 30 秒跑通离线回归
+## 3. 跑测试：eval 回归与 pytest
 
-不需要任何 API key、不联网：
+Grader 有两层测试：**eval 回归**（`eval/cases.yml` 的 21 个 case，进程内直调 `GraderAgent.chat()/resume()` 驱动真实主链路，断言路由 / 守卫 / HITL / 幂等 / 缓存等行为）与 **pytest 单测**（`tests/` 下 47 个，按模块覆盖 ApprovalGate、权限、注入脱敏等）。两者都只断言公开信号，不读 hidden CoT。
+
+**eval 全量回归**——不需要任何 API key、不联网：
 
 ```bash
 GRADER_DISABLE_LLM=1 GRADER_OFFLINE_RAG=1 GRADER_OFFLINE_FACTS=1 python -m eval.runner
+# 输出：total=21 passed=21 failed=0，逐行 [PASS]/[FAIL] <case_id> 与失败原因
 ```
+
+三个离线开关的含义：
 
 - `GRADER_DISABLE_LLM=1`：所有 LLM 调用替换为规则替身；
 - `GRADER_OFFLINE_RAG=1`：RAG 检索走本地 token embedding 替身（同文本永远同向量，可字节级复跑）；
@@ -76,7 +82,37 @@ GRADER_DISABLE_LLM=1 GRADER_OFFLINE_RAG=1 GRADER_OFFLINE_FACTS=1 python -m eval.
 
 三者组合即可在一台干净机器上端到端跑通 21 个离线 case；离线路径是确定性的，重复运行结果一致。
 
-> 也可以不经 HTTP、直接由 API 触发：启动服务后 `POST /eval/run`，详见 [api.md](./api.md#8-离线评测-post-evalrun)。
+**跑单个 case**——命令行只支持全量，单个 case 起服务后经 HTTP 触发（`case_id` 留空即全量；也可在前端控制台 Eval 页点选）：
+
+```bash
+curl -s -X POST http://localhost:8000/eval/run \
+  -H 'Content-Type: application/json' -d '{"case_id": "grader-hitl-reject"}'
+```
+
+**pytest 单元测试**——`tests/conftest.py` 在收集阶段已强制离线三开关，直接跑即可，无需加环境变量前缀：
+
+```bash
+python -m pytest tests/ -q    # 47 passed
+```
+
+> 改动任何 `.py` 后，两层都要重跑（eval 21/21 + pytest 47 passed）才算回归通过；`/eval/run` 的字段级说明见 [api.md](./api.md#8-离线评测-post-evalrun)。
+
+### 3.1 评测覆盖了什么
+
+21 个 case（`eval/cases.yml`）按目的分六组：
+
+| 组 | case | 核心验证 |
+|---|---|---|
+| 基础链路（5） | 状态查询 / rubric 两轮缓存命中 / 大纲检索 / 缓考升级 HITL / 寒暄与低置信兜底 | 只读工具走对、RAG 命中对应域、缓存命中跳模型、低置信追问不调工具 |
+| 守卫（2） | 注入越权钉死 / 自称老师与学生查他人 | `deterministic_block`、`identity_claim_override_rejected`、参数级拦截 |
+| HITL（7） | approve / reject / needs_more_info / 假令牌 / 幂等重放 / 无 checkpoint / 冻结漂移 | 三道闸逐闸拦截、recorded 不重复执行、漂移字段正确 |
+| 安全与公平（2） | 作业正文注入脱敏 / 一致性双跑 | 仍按 rubric 打分不回显原文；同文换署名分差 ≤ 2 |
+| 降级与反馈（2） | 服务不可用降级 / 负反馈回填 | 不编造分数、离线话术连跑 3 次字节级一致；反馈归因生成回归 case |
+| 高风险与批量（3） | 讲师双分支 / 学生发起学术不端 / 批量 200 份 | 直挂政策 citation 转人工；分片 / checkpoint / parallelism=1 |
+
+runner 支持的断言能力：intent / route_kind / 信号词 / trace 事件名与 payload 点路径（如 `source_safety.tainted=true`）/ session_state 点路径 / citation 来源与检索阶段 / 期望与禁止工具 / 禁止文本；case 类型含多轮（子 session 隔离记忆）、resume（重复恢复与 fixture 变异子场景）、一致性双跑（`score_regex` 抽分 + `max_variance`）、反馈回填，以及同一 case 连跑 N 次字节级一致。反馈闭环：`POST /feedback/submit` 归因后自动生成 `feedback-00N` 回归 case。单测 47 个 pytest 覆盖 ApprovalGate、权限三角色、注入脱敏、幂等与断点续批、路由加固与高风险发起。
+
+边界：**离线只验证工程控制流**（路由、守卫、审批、幂等、缓存），不验证模型语言质量——后者需在线真实 key 实测（见 FAQ Q9）。
 
 ---
 
@@ -154,13 +190,13 @@ curl -s http://localhost:8000/manifest | python -m json.tool
 不会。`claimed_role` 仅用于展示，授权一律以 LMS 授课名单快照仲裁；自称讲师但快照不是讲师的请求，记 `identity_claim_override_rejected` 并按学生权限处理。详见 [api.md 角色与鉴权](./api.md#1-角色与鉴权约定)。
 
 **Q5：审批时提示 `blocked/business_fact_drift` 是什么意思？**
-ApprovalGate 恢复时会重新拉一次现场，与暂停时冻结的四个字段（`submission_body_hash` / `rubric_version` / `similarity_score` / `submission_timestamp`）逐字段比对。审批期间学生补交了新版本、rubric 升级或相似度报告更新，都会触发漂移——这是**故意**的安全行为：拒绝执行过期决策，打回重新初批、重新排队等讲师。机制详解见 [Harness · 业务事实漂移与回退](./harness.md#53-业务事实漂移与回退business_fact_drift)，HTTP 错误形态见 [api.md 错误情形](./api.md#10-错误情形blocked漂移与幂等)。
+ApprovalGate 恢复时会重新拉一次现场，与暂停时冻结的四个字段（`submission_body_hash` / `rubric_version` / `similarity_score` / `submission_timestamp`）逐字段比对。审批期间学生补交了新版本、rubric 升级或相似度报告更新，都会触发漂移——这是**故意**的安全行为：拒绝执行过期决策，打回重新初批、重新排队等讲师。机制详解见 [Harness · 业务事实漂移与回退](./harness.md#53-业务事实漂移与回退)，HTTP 错误形态见 [api.md 错误情形](./api.md#10-错误情形blocked漂移与幂等)。
 
 **Q6：trace 里为什么看不到学生学号 / 姓名 / 聊天原文？**
 `grader_trace_v1` 递归脱敏是强制的：学号 / 姓名 / 邮箱 / 手机号掩码，`system_prompt` 与 hidden reasoning 删除，注入攻击原文只记位置 + 长度 + sha256 + 命中正则名。这是红线，不提供关闭开关。
 
 **Q7：时间相关的 case 在不同日期跑结果不一样怎么办？**
-当前版本时间取系统日期；`GRADER_FIXED_DATE` 是预留的演进项、尚未实现、也未放进 `.env.example`。如需复现时间相关判定，请在系统层固定日期（见 [工程专题 Roadmap](./engineering.md#10-roadmap)）。
+当前版本时间取系统日期；`GRADER_FIXED_DATE` 是预留的演进项、尚未实现、也未放进 `.env.example`。如需复现时间相关判定，请在系统层固定日期（见 [生产化升级方案](./engineering.md#6-模型回路强化)）。
 
 **Q8：`pip install -e .` 之后 `python -m eval.runner` 找不到模块？**
 确认当前工作目录在仓库根目录（与 `pyproject.toml` 同级），且已激活装过依赖的虚拟环境。`eval/` 是包，必须从仓库根以 `python -m eval.runner` 运行，而不是 `python eval/runner.py`。

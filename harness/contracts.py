@@ -84,6 +84,10 @@ class RoutePlanCandidate(BaseModel):
     requires_workflow: bool = False
     risk_level: Literal["low", "high"] = "low"
     fallback_policy: Optional[str] = None
+    # 计划来源标记（服务端写入，模型自填值从不采信）：
+    #   deterministic_map          —— 权威 intent 映射生成（离线 / 降级 / 候选被否）
+    #   llm_with_policy_constraints —— 在线候选通过策略约束校验后细化生效
+    source: str = "deterministic_map"
 
     @field_validator("required_tools", mode="before")
     @classmethod

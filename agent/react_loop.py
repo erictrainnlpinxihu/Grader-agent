@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from harness.contracts import RoutePlanCandidate, RuntimeContext, coerce_tool_name
+from harness.hooks import HookManager
 from harness.source_guard import SEMI_TRUSTED, inspect_source
 from harness.tool_runtime import READONLY_TOOL_WHITELIST, ToolRuntime
 
@@ -30,6 +31,8 @@ class ReActLoop:
         route_plan: RoutePlanCandidate,
         runtime_context: RuntimeContext,
         tool_args: Optional[dict[str, Any]] = None,
+        hooks: Optional[HookManager] = None,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """按声明的 required_tools 顺序执行只读工具。
 
@@ -65,6 +68,8 @@ class ReActLoop:
 
         for name in required[:RECURSION_LIMIT]:
             args = self._build_args(name, tool_args)
+            if hooks is not None and session_id:
+                hooks.fire("pre_tool_call", session_id=session_id, tool_name=name, args=args)
             try:
                 result = self.tools.execute(
                     name, args, runtime_context, required_tools=required
@@ -83,10 +88,20 @@ class ReActLoop:
                 )
                 tool_results.append({"tool_name": name, "result": result, "safety": safety})
                 tool_names_called.append(name)
+                if hooks is not None and session_id:
+                    hooks.fire(
+                        "post_tool_call", session_id=session_id, tool_name=name,
+                        status="success", tainted=bool(safety.get("tainted")),
+                    )
             except Exception as exc:  # noqa: BLE001
                 observations.append(
                     {"tool_name": name, "args": args, "status": "error", "error": str(exc)}
                 )
+                if hooks is not None and session_id:
+                    hooks.fire(
+                        "on_error", session_id=session_id, tool_name=name,
+                        error=str(exc)[:120],
+                    )
 
         return {
             "tool_results": tool_results,
