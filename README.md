@@ -154,4 +154,4 @@ cd grader-console && npm install && npm run dev   # http://localhost:5173，/api
 
 ## License
 
-[MIT](./LICENSE)。项目结构参考了某 Agent 课程综合演练的只读参考实现，业务域（教学初批）、数据与文档均为重写，谨此致谢。
+[MIT](./LICENSE)
