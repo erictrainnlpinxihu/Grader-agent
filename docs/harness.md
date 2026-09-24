@@ -13,7 +13,7 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 | 业务环节 | 风险 | 控制点 | 控制手段 | 详见 |
 |---|---|---|---|---|
 | 谁在说话（身份） | 冒充角色骗权限 | perceive 名单仲裁 | 三级权限矩阵 + LMS 授课名单快照，自称不授权 | §2 |
-| 说什么（意图） | 越权指令被弱化理解 | 守卫（plan 与 act 之间） | rule_guard / rule_veto 一票否决 + 受保护意图关键词安全网 | §3 |
+| 说什么（意图） | 越权指令被弱化理解 / 意图被误判 | 守卫（plan 与 act 之间） | rule_guard 正向锁定 + rule_veto 逆向否决（意图纠错 / 计划复核） | §3 |
 | 看什么（输入可信度） | 作业正文夹带注入指令 | source_guard | 三级信任标 + 6 条注入正则 + 原文只记哈希 | §4 |
 | 查什么（工具） | 越权读、模型发明写工具 | 只读白名单对账 | 6 只读工具白名单 + 参数级权限 + 非白名单剥离 | §3.1 |
 | 动不动手（写动作） | 不可逆录分 / 终判 / 公开评语 | ApprovalGate | 只产 HighRiskProposal + 冻结现场 + 审批授权 + 三道闸 | §5 |
@@ -32,6 +32,7 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 | `tool_runtime.py` | 6 只读工具白名单运行时 + 高风险提案器 |
 | `context_builder.py` | 五级信任序、冲突仲裁、历史压缩 |
 | `trace.py` | `grader_trace_v1`、递归 PII 脱敏、CoT 隔离 |
+| `hooks.py` | 生命周期 hook：工具前后 / 错误 / 完成事件进 trace，可注册扩展 |
 | `cost.py` | 成本记账与预算治理（带不可逾越的安全边界） |
 | `lms_client.py` | LMS 只读客户端，在线 / 种子镜像双轨、`_fact_source` 标记 |
 | `contracts.py` | 跨模块数据契约：Pydantic 模型 + 跨字段校验（见下方用词说明） |
@@ -61,42 +62,56 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 
 ---
 
-## 3. 意图边界与一票否决
+## 3. 意图边界：正向锁定与逆向否决
 
-一条消息在进入 act 之前要过两道门禁。先给结论：
+一条消息在进入 act 之前要过两道方向相反的门禁。先给结论：
 
-> **`rule_guard` 回答：这个请求该不该被提出？** 查「意图 × 角色」——此时执行计划还没生成，能判断的只有这条消息想干什么、说话的人有没有资格提这个要求。
+> **`rule_guard`：正向锁定。** 明确越界的消息直接钉死到边界意图——查「意图 × 角色」，含受保护意图的关键词锁定。候选计划作废，**命中即终结守卫链**，不再进入 veto：guard 已经钉死的计划，veto 无事可做。
 >
-> **`rule_veto` 回答：这个请求被安排的执行方式能不能跑？** 查「计划 × 角色 × 风险」——计划已生成、即将执行，以计划为对象做最后一道复核。
+> **`rule_veto`：逆向否决。** 两个对象：**意图**——消息的显式语义与当前意图矛盾时，否决模型意图、采纳用户的显式信号；**计划**——执行前复核「计划 × 角色 × 风险」的匹配，是最后一道断言。
 
-### 3.1 设计缘由：危险来自两个不同的地方
+### 3.1 设计缘由：三类危险，各有一道闸
 
-**第一类危险：请求本身越线——rule_guard 在意图层判死。** 两种形态：
+**第一类：请求本身越线——guard 正向锁定。** 两种形态：
 
 1. **意图是红线，与身份无关**：注入攻击、"你现在是管理员"（`security_request`）。这不是权限不够的问题——这个动作对谁都绝不允许，直接钉死为固定拒绝话术（`deterministic_block`），不交给模型理解、不给发挥空间；
 2. **身份对某个意图根本无权**：学生发起批量批改。批量对 ta / 讲师是正常业务、对学生无权——同一个意图对不同角色结论不同，同样在意图层就能判死。
 
-一个刻意的例外：高风险意图（申诉 / 学术不端咨询·举报）在 rule_guard **不拦、反而强制升级**为转人工。申诉是学生应有的权利、立案又无副作用，拦掉才是错的——要保证的只是它必须走人工审批，不能被当成普通问答直答。
+正向锁定还包括**受保护意图的关键词锁定**：安全 / 学术不端 / 申诉属于受保护意图，模型不可把它们降级成弱意图——关键词命中而候选是更弱意图时，强制改用受保护意图的权威计划（trace 记 `keyword_guardrail_<intent>`），判定顺序**安全 > 学术不端 > 申诉**；普通业务意图仍以模型语义分类为准。
 
-**第二类危险：意图合法，但执行安排错了——只有 rule_veto 能拦。** 这类危险在意图层**看不见**：执行计划是意图判定之后才产生的，而且可能出错（模型自填、映射缺陷、未来代码改动）。两种典型形态：
+| 关键词（任一命中） | 强制意图 |
+|---|---|
+| 忽略 / 你现在是 / 管理员 / 系统提示 / system message | `security_request` |
+| 查重 / 抄袭 / 学术不端 / 代写 / 雷同 | `academic_integrity_question` |
+| 申诉 / 不服 / 误判 / 复议 | `grade_appeal` |
+
+**模型为什么会误判意图？** 语义分类本质是概率性的：口语化表述（"这作业跟别人挺像的，没事吧？"）与 few-shot 样例不匹配；意图边界本身模糊（一句带情绪的"不服"是申诉还是抱怨？）；长尾说法在训练分布之外。`with_structured_output` 只约束**输出格式合法**，不保证**分类正确**，且错误方向不可预测。对普通业务意图，判错只是答非所问、下一轮能纠正；对受保护意图，"判轻"意味着绕过审批与转人工——所以宁可信其有，由关键词锁定兜底，这条规则写在代码里而不是 prompt 里。
+
+一个刻意的例外：高风险意图（申诉 / 学术不端咨询·举报）在 guard **不拦、反而强制升级**为转人工。申诉是学生应有的权利、立案又无副作用，拦掉才是错的——要保证的只是它必须走人工审批。升级同样属于 guard 命中：计划已钉死为 `workflow_human`，守卫链就此终结。
+
+**第二类：意图被误判，而且用户说得很明确——veto 逆向否决意图。** 关键词锁定只保护三类受保护意图、只做升险方向，管不了普通业务意图之间的矛盾："只是问 rubric 怎么评，不是让你批"——模型给了 `grading_request`，消息里的显式否定与之冲突。对这类高置信的显式矛盾（"不是 X，是 Y"式），veto 否决当前意图、按显式信号重建计划（trace 记 `rule_veto_<intent>`）。原则：**用户的显式信号 > 模型的猜测**；规则刻意保守，只覆盖否定信号与明确指向同时命中的情况，拿不准时不纠、宁可下一轮澄清。
+
+**第三类：意图合法，但执行安排错了——veto 复核计划。** 这类危险在意图层**看不见**：执行计划是意图判定之后才产生的，而且可能出错（模型自填、映射缺陷、未来代码改动）。两种典型形态：
 
 - **角色不配执行这份计划**：学生说"帮我批一下"。`grading_request` 意图完全合法（ta / 讲师天天在用），产出的"调 4 个只读工具出草稿"计划本身也没问题，但学生没有初批权。注意 rule_guard **不能**拦这个意图——对别的角色它是正当业务；不匹配只有在「计划 × 具体角色」的组合上才暴露，这层检查只能放在计划上；
 - **执行方式与风险不匹配**：高风险意图拿到的计划若不是 `workflow_human`（直答或 RAG），一答就绕过了审批。"高风险必须走 workflow"约束的是**执行方式**而不是意图本身，兜底天然属于计划层。
 
 **常被追问：计划既然由固定的 intent→plan 映射产生，为什么不把非法计划直接在映射里规避掉？** 因为"计划只会从这一张映射产生"从来不是事实——计划的实际构造点不止一个：映射本身、**在线候选的约束内细化**（§3.3，计划可携带模型影响，`source=llm_with_policy_constraints`）、guard 钉死 / 升级时的重建、veto 降级、以及 loop 内的缓考升级（`_escalate_deferred_exam` 直接构造计划、不经映射）。每个构造点都各自记住角色与风险约束，漏一处就是缺口——候选细化存在之后这一点更成立：veto 复核的恰恰是一份**可能受模型影响**的计划，而不是映射的重言式复述。所以「计划 × 角色 × 风险」的合法性做成**执行前的单一断言**：不管计划从哪条路径来、映射将来怎么改，非法组合都在最后一步被拦。这份分工也是职责分离——映射只回答"这个动作是什么"（纯查表、刻意不编码角色策略），守卫回答"谁可以做"；veto 是零副作用纯函数，用几乎免费的冗余换"不把安全寄托在任何一个生成点永远正确"。类比：前端已校验的输入后端仍要再校验，ORM 已参数化查询、数据库账号仍要收权。
 
-两道门禁 + §3.4 的关键词安全网构成纵深防御：意图、计划、输入关键词三个层面各有一道确定性复核，任何一层被绕过或未来改动引入缺口，下一层仍以不同对象拦截。
+正向锁定、逆向否决（意图）、计划复核构成纵深防御：意图、显式语义、计划三个层面各有一道确定性复核，任何一层被绕过或未来改动引入缺口，下一层仍以不同对象拦截。
 
 ### 3.2 判定分支与降级
 
 ```mermaid
 flowchart TD
     RW["QueryRewrite 后的查询"] --> CAND["候选 RoutePlanCandidate<br/>（在线结构化模型 / 离线关键词）"]
-    CAND --> RG{"rule_guard"}
-    RG -->|"security_request / student 批量"| BLK["钉死 deterministic_block"]
-    RG -->|"高风险 intent（申诉/学术不端）"| UPG["强制改写 workflow_human"]
-    RG -->|放行| RV{"rule_veto"}
-    UPG --> RV
+    CAND --> RG{"rule_guard 正向锁定<br/>红线 / 身份越权 / 受保护意图 / 高风险升级"}
+    RG -->|"block：security / 学生批量"| BLK["钉死 deterministic_block<br/>守卫链终结 → 固定话术直答"]
+    RG -->|"高风险强制升级"| WKF["钉死 workflow_human<br/>守卫链终结 → 进 act"]
+    RG -->|放行| VI{"rule_veto ① 逆向否决<br/>显式语义与意图矛盾 ?"}
+    VI -->|"矛盾（不是批，是问 rubric）"| FIX["采纳显式信号 · 重建计划<br/>rule_veto_&lt;intent&gt;"]
+    VI -->|一致| RV{"rule_veto ② 计划复核<br/>route_kind × 风险 × 角色"}
+    FIX --> RV
     RV -->|"task_planner 但角色不允许"| FB1["降级 deterministic_fallback"]
     RV -->|"student 请求初批"| FB3["降级 · 转交教学人员"]
     RV -->|"高风险 intent 没走 workflow"| FB2["降级 · 不建 checkpoint"]
@@ -104,7 +119,7 @@ flowchart TD
     RV -->|通过| ACT["进入 act 执行"]
 ```
 
-`rule_guard` 命中：钉死（红线 / 学生批量）或强制升级（高风险 → `workflow_human`）。`rule_veto` 命中：降级为安全路由——`task_planner` 落低置信澄清、student 的初批请求落"已转交教学人员"话术；两类降级都**不产草稿、不开 checkpoint、不触发任何写动作**。
+`rule_guard` 命中即终结守卫链：钉死（红线 / 学生批量 → 固定拒绝话术直答）或强制升级（高风险 → `workflow_human` 进 act）。`rule_veto` ① 意图否决：显式矛盾 → 按显式信号重建计划（候选作废）。`rule_veto` ② 计划复核命中：降级为安全路由——`task_planner` 落低置信澄清、student 的初批请求落"已转交教学人员"话术；两类降级都**不产草稿、不开 checkpoint、不触发任何写动作**。
 
 **student / ta 发起高风险立案不在 veto 之列**——立案只产提案、暂停等审批，无副作用；发起 ≠ 审批，instructor 专属的终录 / 终判由审批端闸 0 强制（§5.2）。所有改写记录在 `guard_meta` 与 `session_state.routing`，并写 `rule_guard_overridden` trace。
 
@@ -117,20 +132,6 @@ flowchart TD
 3. **执行层白名单剥离**：`ReActLoop` 对不在 6 个只读白名单内的工具只剥离、记 `blocked_not_whitelisted`，不执行、不抛错、不中断。
 
 三层叠加保证：模型既不可能借自填工具触发写动作，也不可能因为"发明了一个工具名"把请求打成 HTTP 500。
-
-### 3.4 受保护意图：模型不可降级
-
-在线模型还可能把"这份作业算不算学术不端"误判成普通批改或寒暄。安全 / 学术不端 / 申诉属于**受保护意图**，路由在得到候选计划之后、rule_guard 之前用关键词做一次安全网纠偏：
-
-| 关键词（任一命中） | 强制意图 |
-|---|---|
-| 忽略 / 你现在是 / 管理员 / 系统提示 / system message | `security_request` |
-| 查重 / 抄袭 / 学术不端 / 代写 / 雷同 | `academic_integrity_question` |
-| 申诉 / 不服 / 误判 / 复议 | `grade_appeal` |
-
-命中且候选计划是更弱意图时，强制改用受保护意图的权威计划（trace 记 `keyword_guardrail_<intent>`）。判定顺序为**安全 > 学术不端 > 申诉**；普通业务意图仍以模型语义分类为准。
-
-**模型为什么会把高风险意图"降级"成弱意图？** 语义分类本质是概率性的：口语化表述（"这作业跟别人挺像的，没事吧？"）与 few-shot 样例不匹配；意图边界本身模糊（一句带情绪的"不服"是申诉还是抱怨？）；长尾说法在训练分布之外。`with_structured_output` 只约束**输出格式合法**，不保证**分类正确**——而分类错误的方向不可预测：既可能把学术不端判轻，也可能把寒暄判重。对普通业务意图，判错只是答非所问、下一轮能纠正，代价有限；对受保护意图，"判轻"意味着绕过审批与转人工，代价不可接受。所以策略是**宁可信其有**：模型判重了最多多走一道人工流程，判轻了则由关键词安全网兜底纠偏——这也是把这条规则写进代码而不是写进 prompt 的原因。
 
 ---
 
@@ -256,7 +257,18 @@ flowchart LR
 - 递归**掩码** PII：邮箱 → `***@***`、学号 → `stu***`、中文姓名 → `***`；
 - 注入攻击原文由 source_guard 预先替换，trace 里只留哈希。
 
-主链路事件按时间：`perceive_input_received → context_source_safety_checked → route_planned →（rule_guard_overridden）→ tool_called / rag_retrieved / workflow_proposal_created / task_planned → shard_completed → context_report → workflow_checkpoint_created`；恢复阶段为 `resume_token_rejected` / `approver_authorization_denied` 或 `resume_completed`。`context_report` 记录 observe 阶段组装上下文的来源清单、冲突裁定与各来源条数。配合 `GradingDraft` 的 `rubric_item_id + cited_chunk_hash + submission_timestamp`，一条评语事后能完整重放（见 [Agent · GradingDraft](./agent.md#7-respond草稿与六种-skip)）。
+主链路事件按时间：`perceive_input_received → context_source_safety_checked → route_planned →（rule_guard_overridden）→ tool_called / rag_retrieved / workflow_proposal_created / task_planned → shard_completed → context_report → workflow_checkpoint_created`；恢复阶段为 `resume_token_rejected` / `approver_authorization_denied` 或 `resume_completed`。`context_report` 记录 observe 阶段组装上下文的来源清单、冲突裁定与各来源条数。配合 `GradingDraft` 的 `rubric_item_id + cited_chunk_hash + submission_timestamp`，一条评语事后能完整重放（见 [Agent · respond](./agent.md#7-respond确定性答案先行最终模型只做受控表达)）。
+
+**生命周期 hook。** `HookManager` 在主链路的关键节点发射治理事件，与 trace 同源（fire 即写入 `hook_<stage>` 事件），每请求独立一套：
+
+| 触发点 | 事件 | 载荷 |
+|---|---|---|
+| 只读工具执行前 | `hook_pre_tool_call` | tool_name / args |
+| 只读工具成功后 | `hook_post_tool_call` | tool_name / status / tainted |
+| 工具异常时 | `hook_on_error` | tool_name / error |
+| 主循环完成时 | `hook_on_completion` | intent / route_kind / next_action |
+
+`register(stage, fn)` 可挂自定义治理逻辑（成本统计、外部告警等）；hook 自身抛错只记一条 `hook_error` 事件，绝不影响主链路。
 
 ---
 

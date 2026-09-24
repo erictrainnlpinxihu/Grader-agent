@@ -151,7 +151,7 @@ flowchart LR
 - **sha256 只取前 16 位**：缓存键只要求低碰撞 + 定长，16 个十六进制字符（64 bit）在缓存规模内碰撞概率可忽略，比完整哈希省内存、便于打日志；
 - **value 存"融合 + 重排后"的最终结果**：命中时跳过的不只是双路召回，还有 RRF 与 rerank（在线模式连带省一次 rerank API 调用），respond 直接拿 results 渲染 citation。
 
-已接入 `retrieve()` 首尾：命中直接返回 `(results, cache_hit=True)`；未命中走完 hybrid + RRF + rerank 后写入。它挂在 retriever 实例级而非 session 级——eval 多轮 case 每轮用不同子 session id，但同一 agent 共享一个 retriever，重复问句仍能命中。命中时 loop 写 `cache_hit` trace，并在 respond 阶段**跳过最终模型润色**（`model_answer_skipped`，对应六种 skip 中的缓存命中场景，见 [Agent · respond](./agent.md#7-respond草稿与六种-skip)）。
+已接入 `retrieve()` 首尾：命中直接返回 `(results, cache_hit=True)`；未命中走完 hybrid + RRF + rerank 后写入。它挂在 retriever 实例级而非 session 级——eval 多轮 case 每轮用不同子 session id，但同一 agent 共享一个 retriever，重复问句仍能命中。命中时 loop 写 `cache_hit` trace，并在 respond 阶段**跳过最终模型受控表达**（`model_answer_skipped`，对应六种 skip 中的缓存命中场景，见 [Agent · respond](./agent.md#7-respond确定性答案先行最终模型只做受控表达)）。
 
 **失效与安全边界：**
 

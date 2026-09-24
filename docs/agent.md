@@ -46,7 +46,7 @@ flowchart TD
     RAG --> OBS
     BATCH --> OBS
     NONE --> RSP
-    OBS --> RSP["respond · 六种 skip 判定<br/>→ 直答或最终模型"]
+    OBS --> RSP["respond · 确定性答案先行<br/>skip 判定 → 直答或受控表达"]
     WF --> RSP
     CLF --> RSP
     BLK --> OUT(["ChatResponse + grader_trace_v1"])
@@ -70,7 +70,7 @@ flowchart TD
 | plan | 模型（语义分类） | intent + confidence 必选；工具 / 知识域可在权威映射约束内细化，越界整份候选作废 |
 | act | harness（按 route_kind 分派） | 无：工具回路按 plan 声明顺序执行 |
 | observe | harness | 无：固定拼结构化上下文并留痕 |
-| respond | 模型（结构化草稿 / 润色） | 生成话术与逐条目给分；HITL 仍需人工 |
+| respond | 模型（受控表达） | 只改写话术，不改事实与控制字段；草稿逐条目给分；HITL 仍需人工 |
 
 ---
 
@@ -86,7 +86,7 @@ perceive 只做两件事，都是确定性的，一件关于"你是谁"，一件
 
 ## 4. plan：弄清问题、定路线
 
-plan 做三件事，顺序固定：先把口语查询**结构化改写**（QueryRewrite），再做**模型语义分类**（12 intent + 置信度门槛），最后过一道**确定性守卫复核**（rule_guard / rule_veto）。模型只参与前两步的"理解"，守卫负责否决。完整链路：
+plan 做三件事，顺序固定：先把口语查询**结构化改写**（QueryRewrite），再做**模型语义分类**（12 intent + 置信度门槛），最后过两道方向相反的**确定性守卫**（rule_guard 正向锁定 / rule_veto 逆向否决）。模型只参与前两步的"理解"，守卫负责锁定与否决。完整链路：
 
 ```mermaid
 flowchart TD
@@ -96,17 +96,20 @@ flowchart TD
     CONF -->|是| CST{"候选策略约束校验<br/>route_kind / 风险与映射一致<br/>工具、知识域 ⊆ 映射集合"}
     CST -->|"越界（含发明的写工具）"| BASE["整份候选作废<br/>回落权威映射"]
     CST -->|通过| AP["候选约束内细化生效<br/>source = llm_with_policy_constraints"]
-    BASE --> NET{"受保护意图关键词安全网<br/>安全/学术不端/申诉被误判为弱意图 ?"}
-    AP --> NET
-    NET -->|"命中"| FIX["强制纠偏到受保护意图<br/>keyword_guardrail_&lt;intent&gt;"]
-    NET -->|未命中| RG{"rule_guard：intent × 角色"}
+    BASE --> LOCK{"关键词正向锁定<br/>受保护意图被误判为弱意图 ?"}
+    AP --> LOCK
+    LOCK -->|"命中"| FIX["强制纠偏到受保护意图<br/>keyword_guardrail_&lt;intent&gt;"]
+    LOCK -->|未命中| RG{"rule_guard 正向锁定<br/>intent × 角色"}
     FIX --> RG
-    RG -->|"security / 学生批量"| BLOCK["改写计划 → deterministic_block 钉死"]
-    RG -->|"高风险 intent 未走 workflow"| UP["改写计划 → 强制升级 workflow_human"]
-    RG -->|放行| RV{"rule_veto：route_kind × 风险 × 角色"}
-    UP --> RV
+    RG -->|"block：security / 学生批量"| BLOCK["钉死 deterministic_block<br/>守卫链终结 → 直接 respond"]
+    RG -->|"高风险强制升级"| WKF["钉死 workflow_human<br/>守卫链终结 → 进 act"]
+    RG -->|放行| VINT{"rule_veto ① 逆向否决<br/>显式语义与意图矛盾 ?"}
+    VINT -->|"矛盾"| FIX2["采纳显式信号 · 重建计划"]
+    VINT -->|一致| RV{"rule_veto ② 计划复核<br/>route_kind × 风险 × 角色"}
+    FIX2 --> RV
     RV -->|"不匹配（如 student 初批）"| DEG["改写计划 → 安全降级路由"]
     RV -->|通过| ACT["进入 act"]
+    WKF --> ACT
     BLOCK --> OUT2["直接 respond"]
     CLF --> OUT2
     DEG --> OUT2
@@ -151,9 +154,9 @@ flowchart TD
 
 非法计划进不了执行层：`RoutePlanCandidate`（定义在 `harness/contracts.py`）用 Pydantic v2 做强校验（`extra="forbid"`、`strict=True`），带三条跨字段校验（声明工具必须 `needs_business_tools=True`、声明知识域必须 `needs_rag=True`、`requires_workflow` 必须同时 high 风险 + workflow_first），并有 `before` validator 把模型塞进来的 dict / JSON 字符串形状的工具名归一为纯名字。解析或校验失败即回落确定性路径，绝不把非法计划喂给 act。
 
-### 4.3 守卫复核：架在 plan 与 act 之间
+### 4.3 守卫：架在 plan 与 act 之间
 
-守卫**不是五阶段中的第六个阶段**，而是拦截在 plan 与 act 之间的闸——所谓"横切"（cross-cutting）：控制逻辑不属于主链路的任何一环，却切在主链路的关键位置上。路由顺序是：候选计划 → **受保护意图关键词安全网**（安全 / 学术不端 / 申诉关键词命中而模型给了更弱意图时强制纠偏）→ `rule_guard(intent, rt)` → 高风险强制改写为 workflow → `rule_veto(plan, rt)`。守卫**否决的是模型的意图裁量权与计划**，不是润色文案。高风险 workflow 的**发起**对 student / ta 开放（申诉、学术不端咨询 / 举报只产提案、暂停等审批，无副作用）；instructor 专属的终录 / 终判约束在审批端闸 0。守卫的分支与触发时机详见 [Harness · 意图边界](./harness.md#3-意图边界与一票否决)。
+守卫**不是五阶段中的第六个阶段**，而是拦截在 plan 与 act 之间的闸——所谓"横切"（cross-cutting）：控制逻辑不属于主链路的任何一环，却切在主链路的关键位置上。守卫链顺序：候选计划 → 关键词正向锁定（受保护意图被误判为弱意图时强制纠偏）→ `rule_guard` 正向锁定（**命中即终结守卫链**：钉死直答，或升级 workflow 后进 act）→ `rule_veto` ① 逆向否决意图（显式语义与意图矛盾时采纳显式信号）→ `rule_veto` ② 复核计划。守卫改写的是**模型的意图裁量权与计划**，不是润色文案。高风险 workflow 的**发起**对 student / ta 开放（申诉、学术不端咨询 / 举报只产提案、暂停等审批，无副作用）；instructor 专属的终录 / 终判约束在审批端闸 0。分支与触发时机详见 [Harness · 意图边界](./harness.md#3-意图边界正向锁定与逆向否决)。
 
 ---
 
@@ -252,9 +255,13 @@ observe 不再调任何模型，只做装配：`ContextBuilder.build()` 把本�
 
 ---
 
-## 7. respond：草稿与六种 skip
+## 7. respond：确定性答案先行，最终模型只做受控表达
 
-`FinalAnswerComposer.compose()` 在调最终模型之前按顺序短路——**六种 skip 命中其一就不调最终模型**，这是骨架"一票否决"在回答侧的落点：
+respond 分两步走，控制权始终在骨架手里。
+
+**第一步：确定性答案。** `FinalAnswerComposer` 的每个执行分支先产出一套完整结果——确定性答案文本，加上一组控制字段（`signals / next_action / needs_human_approval / skip_reason`）。**风险判断、资格判断、下一步动作在这一步就定了，与模型无关**：初批是否要等审批、工具为空要不要降级、被拦截的消息回什么话术，全是确定性代码的结论。
+
+**第二步：六种 skip——模型不参与的场景。** 在让最终模型参与之前按顺序短路，命中其一就直接返回确定性答案，这是骨架"一票否决"在回答侧的落点：
 
 | # | skip 场景 | 触发 |
 |---|---|---|
@@ -265,7 +272,12 @@ observe 不再调任何模型，只做装配：`ContextBuilder.build()` 把本�
 | 5 | `tainted_source_redacted` | 作业正文命中注入 → 清洗后**仍按 rubric 打分**，但不回显攻击原文 |
 | 6 | `cost_budget_truncated` | token 预算告警 / 缓存命中 → 直答缓存片段或规则话术 |
 
-skip 都未命中时才调最终模型，在线共两处：`rag` 分支调一次 `generate` 润色（prompt 里带 observe 组装的会话实体，缓存命中则跳过）；`grading_request` 以 `with_structured_output(GradingDraft)` 产出结构化草稿——作业正文**未命中注入正则**才进模型 prompt，命中注入或模型不可用时回落确定性打分（对应 skip 5：攻击原文绝不喂给模型）。
+**未命中 skip：最终模型只做受控表达。** 会走到模型的是低风险直答分支（RAG 问答、状态查询）。模型拿到的输入是**确定性答案 + 全部证据**（检索结果、observe 组装的上下文），任务只有一个——把确定性答案改写得更自然。契约是硬的：
+
+- 模型**只能改写表达方式**，不得改变事实与数字、资格判断、风险等级、下一步动作，不得补充证据之外的信息——响应的控制字段一律来自确定性分支，模型输出只替换 answer 文本；
+- 证据随响应返回：`tool_calls / citations / pending_approval / cost_summary / trace` 是 observe 阶段的**可观察证据**，与 answer 对应，事后可核对"这句话依据了什么"。
+
+高风险分支不需要表达润色：初批草稿与转人工提案命中 skip #3，用固定话术直答。`grading_request` 以 `with_structured_output(GradingDraft)` 产出结构化草稿——作业正文**未命中注入正则**才进模型 prompt，命中注入或模型不可用时回落确定性打分（对应 skip 5：攻击原文绝不喂给模型）。
 
 ### GradingDraft：评分可重放的前提
 
@@ -334,7 +346,7 @@ flowchart TD
 |---|---|---|---|
 | 1 | 查询改写 | plan | `structured(QueryRewrite)` |
 | 2 | 意图分类 + 置信度 | plan | `structured(RoutePlanCandidate)` |
-| 3 | RAG 答案润色 | respond | `generate`（缓存命中跳过） |
+| 3 | 受控表达（RAG 问答 / 状态查询直答） | respond | `generate`（确定性答案为输入；缓存命中跳过） |
 | 4 | 结构化初批 | respond | `structured(GradingDraft)`（正文命中注入跳过） |
 
 模块不缓存 prompt 正文、不混入动态学生数据。

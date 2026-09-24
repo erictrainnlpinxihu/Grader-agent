@@ -15,11 +15,18 @@ rule_veto(route_plan, runtime_context) -> (blocked, reason)
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from harness.contracts import RoutePlanCandidate, RuntimeContext
 
 _HIGH_RISK_INTENTS = {"grade_appeal", "academic_integrity_question"}
+
+# 意图逆向否决：消息的显式信号与当前意图矛盾时采纳显式信号。
+# 只覆盖高置信的显式矛盾（否定词 + 明确指向同时命中），拿不准不纠——
+# 宁可下一轮澄清，不做投机纠偏。
+_EXPLICIT_DENIAL = ("不是批", "别批", "不用批", "先不批", "不是让你批", "不是让你改")
+_RUBRIC_SIGNALS = ("rubric", "评分", "怎么评", "怎么给分", "给分标准", "评分标准")
+_STATUS_SIGNALS = ("状态", "交了吗", "多少分", "成绩", "批完了吗")
 
 
 def rule_guard(intent: str, runtime_context: RuntimeContext) -> tuple[bool, str]:
@@ -47,6 +54,23 @@ def rule_guard(intent: str, runtime_context: RuntimeContext) -> tuple[bool, str]
         return False, f"rule_guard_high_risk_{intent}"
 
     return False, ""
+
+
+def veto_intent(user_message: str, intent: str) -> Optional[str]:
+    """逆向否决：消息显式语义与当前意图矛盾时，返回纠正后的意图。
+
+    用户的显式信号 > 模型的猜测：如"只是问 rubric 怎么评，不是让你批"，
+    模型给了 grading_request，消息显式否定批改并指向评分标准查询。
+    规则刻意保守：仅当否定信号与明确指向同时命中才纠正，否则返回 None。
+    """
+    if intent != "grading_request":
+        return None
+    if any(d in user_message for d in _EXPLICIT_DENIAL):
+        if any(s in user_message for s in _RUBRIC_SIGNALS):
+            return "rubric_query"
+        if any(s in user_message for s in _STATUS_SIGNALS):
+            return "assignment_status_query"
+    return None
 
 
 def rule_veto(route_plan: RoutePlanCandidate, runtime_context: RuntimeContext) -> tuple[bool, str]:

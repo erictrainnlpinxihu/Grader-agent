@@ -268,6 +268,14 @@ class GraderAgent:
             composed["pending_approval"] = pending_approval
 
         answer = composed["answer"]
+        # on_completion 在构建响应前 fire，保证事件进入当轮 trace_events
+        hooks.fire(
+            "on_completion",
+            session_id=session_id,
+            intent=route_plan.intent,
+            route_kind=route_plan.route_kind,
+            next_action=composed.get("next_action", "answer_user"),
+        )
         response: dict[str, Any] = {
             "session_id": session_id,
             "answer": answer,
@@ -309,13 +317,6 @@ class GraderAgent:
         )
         self._history[session_id].append(
             {"role": "assistant", "content": answer, "type": "assistant_message"}
-        )
-        hooks.fire(
-            "on_completion",
-            session_id=session_id,
-            intent=route_plan.intent,
-            route_kind=route_plan.route_kind,
-            next_action=response.get("next_action", "answer_user"),
         )
         return response
 

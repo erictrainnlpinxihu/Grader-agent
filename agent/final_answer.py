@@ -290,17 +290,20 @@ class FinalAnswerComposer:
         answer = f"依据{top.get('domain', '相关政策')}：{snippet_text[:160]}"
         if tainted:
             answer = "[tainted-source-redacted] " + answer
-        # 缓存命中或离线：跳过最终模型润色，直接用确定性模板
+        # 缓存命中或离线：跳过最终模型受控表达，直接用确定性模板
         if not cache_hit:
-            user_prompt = f"基于以下检索结果作答，不要编造：{rag_results[:2]}"
-            # 消费 observe 组装并脱敏后的上下文：会话实体（当前作业 / 提交）
-            # 让最终模型的回答与当前会话一致，而非只看检索片段
+            entities: dict[str, Any] = {}
             if context is not None:
-                entities = {
-                    k: v for k, v in (context.get("memory") or {}).items() if v
-                }
-                if entities:
-                    user_prompt += f"；当前会话实体：{entities}"
+                entities = {k: v for k, v in (context.get("memory") or {}).items() if v}
+            # 受控表达：确定性答案为基准，模型只改写表达——不得改变事实、
+            # 数字、资格判断、风险等级或下一步动作，不得补充证据之外的信息
+            user_prompt = (
+                "把下面的确定性答案改写得更自然。只能调整表达方式，不得改变"
+                "事实与数字、资格判断、风险等级或下一步动作，不得补充新信息。"
+                f"确定性答案：{answer}；可用证据：{rag_results[:2]}"
+            )
+            if entities:
+                user_prompt += f"；当前会话实体：{entities}"
             online = self.llm.generate(
                 render_system_prompt({"needs_rag": True, "route_kind": "rag"}),
                 user_prompt,
@@ -370,6 +373,14 @@ class FinalAnswerComposer:
             else:
                 answer = "未查询到对应作业记录。"
             signals = ["assignment_status_query", "tool_readonly"]
+            # 在线受控表达：与 RAG 分支同一契约（确定性答案为基准，只改写话术）
+            online = self.llm.generate(
+                render_system_prompt({"needs_rag": False, "route_kind": "tool_readonly"}),
+                "把下面的确定性答案改写得更自然。只能调整表达方式，不得改变事实"
+                f"与数字或下一步动作，不得补充新信息。确定性答案：{answer}",
+            )
+            if online:
+                answer = online
         return {
             "answer": answer,
             "signals": signals,

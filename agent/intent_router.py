@@ -151,7 +151,8 @@ class IntentRouter:
             guard_meta["guard_reason"] = f"keyword_guardrail_{protected}"
             plan = _plan_for_intent(protected, runtime_context)
 
-        # 2. rule_guard：安全 / 权限 / 高风险边界
+        # 2. rule_guard：正向锁定（安全 / 权限 / 高风险边界）。
+        #    命中即终结守卫链——guard 已把意图与计划钉死，veto 无事可做。
         blocked, reason = route_guard.rule_guard(plan.intent, runtime_context)
         if blocked:
             guard_meta["guard_override"] = True
@@ -162,7 +163,8 @@ class IntentRouter:
             )
             return plan, guard_meta
 
-        # rule_guard 返回 (False, reason) 表示要求高风险 intent 必须走 workflow_human
+        # rule_guard 返回 (False, reason) 表示要求高风险 intent 必须走 workflow_human。
+        # 升级后的发起对 student/ta 开放（审批约束在闸 0），守卫链就此终结
         if reason.startswith("rule_guard_high_risk_") and plan.route_kind != "workflow_human":
             plan = _build_plan(
                 plan.intent, "workflow_human",
@@ -170,8 +172,16 @@ class IntentRouter:
             )
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = reason
+            return plan, guard_meta
 
-        # 3. rule_veto：route_kind 与角色不匹配
+        # 3a. rule_veto ①：逆向否决意图——消息显式语义与当前意图矛盾时采纳显式信号
+        corrected = route_guard.veto_intent(text, plan.intent)
+        if corrected and corrected != plan.intent:
+            guard_meta["guard_override"] = True
+            guard_meta["guard_reason"] = f"rule_veto_{corrected}"
+            plan = _plan_for_intent(corrected, runtime_context)
+
+        # 3b. rule_veto ②：执行前复核 route_kind × 风险 × 角色
         vetoed, veto_reason = route_guard.rule_veto(plan, runtime_context)
         if vetoed:
             guard_meta["guard_override"] = True
