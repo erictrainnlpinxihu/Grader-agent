@@ -93,10 +93,50 @@ export interface TraceEvent {
   schema_version: string;
 }
 
-export interface CostSummary {
-  tool_calls?: number;
+/** 守卫链单条记录：plan → act 之间的确定性闸（后端 harness/cost.py grader_cost_v1） */
+export interface GuardCheck {
+  check: 'protected_intent_net' | 'rule_guard' | 'veto_intent' | 'rule_veto';
+  verdict: 'pass' | 'override' | 'escalate' | 'veto' | 'block';
+  reason: string;
+}
+
+/** plan 阶段结构化改写 + 最终计划（后端 agent/loop.py session_state.plan） */
+export interface PlanInfo {
+  rewritten_query: string;
+  sub_questions: string[];
+  entities?: {
+    submission_id?: string | null;
+    course_id?: string | null;
+    assignment_id?: string | null;
+  };
+  confidence: number;
+  source?: string;
+  candidate_applied?: boolean;
+  required_tools?: string[];
+  knowledge_domains?: string[];
+  risk_level?: string;
+  fallback_policy?: string | null;
+}
+
+/** 请求级时延（后端 agent/loop.py grader_latency_v1） */
+export interface LatencyInfo {
+  total_ms: number;
+  llm_ms: number;
   llm_calls?: number;
-  tokens?: number;
+  phases?: Record<string, number>;
+}
+
+/** 与后端 harness/cost.py grader_cost_v1 字段对齐（离线 / 缺 key 时模型开销为 0） */
+export interface CostSummary {
+  tool_call_count?: number;
+  llm_call_count?: number;
+  tokens_used?: number;
+  tokens_budget?: number;
+  budget_ratio?: number;
+  llm_latency_ms?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_llm_tokens?: number;
 }
 
 export interface ChatResponse {
@@ -112,14 +152,19 @@ export interface ChatResponse {
   tool_calls?: ToolCallObservation[];
   next_action: string;
   needs_human_approval: boolean;
+  latency?: LatencyInfo;
   session_state: {
     routing?: {
       intent: string;
       route_kind: RouteKind;
       guard_override: boolean;
       guard_reason?: string;
+      guard_chain?: GuardCheck[];
       confidence: number;
+      source?: string;
+      candidate_applied?: boolean;
     };
+    plan?: PlanInfo;
     rag?: { cache_hit: boolean };
     workflow?: {
       state: SubmissionState;

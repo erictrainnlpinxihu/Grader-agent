@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Optional
 
 import harness.config  # noqa: F401  # 首次 import 即加载 .env，须早于下面的环境变量读取
@@ -34,6 +35,12 @@ class LLMClient:
         # 真实在线调用计数（离线 / 缺 key 的短路返回不计），供成本记账读取。
         # 进程级单例累计，调用方按"请求前后差值"取本请求的真实调用数。
         self.calls = 0
+        # 真实在线调用的累计耗时（毫秒）与 token 用量（离线 / 缺 key 不计）。
+        # 同样按"请求前后差值"取本请求的模型时延与 token 开销，供 /chat 响应
+        # 的 latency / cost_summary 暴露给调试台。
+        self.latency_ms = 0.0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
     # ------------------------------------------------------------------
     def _base_url(self) -> str:
@@ -63,8 +70,30 @@ class LLMClient:
         return self._llm
 
     # ------------------------------------------------------------------
+    def _record_usage(self, resp: Any) -> None:
+        """从在线回包提取真实 token 用量，累加到单例计数器。
+
+        usage_metadata（langchain-core 标准）优先，OpenAI 的
+        response_metadata.token_usage 兜底；两者皆缺则不计（保持 0）。
+        """
+        if resp is None:
+            return
+        usage = getattr(resp, "usage_metadata", None) or {}
+        if usage:
+            self.prompt_tokens += int(usage.get("input_tokens", 0) or 0)
+            self.completion_tokens += int(usage.get("output_tokens", 0) or 0)
+            return
+        token_usage = (getattr(resp, "response_metadata", None) or {}).get("token_usage") or {}
+        self.prompt_tokens += int(token_usage.get("prompt_tokens", 0) or 0)
+        self.completion_tokens += int(token_usage.get("completion_tokens", 0) or 0)
+
+    # ------------------------------------------------------------------
     def structured(self, pydantic_model: type, prompt: str) -> Optional[Any]:
-        """在线：返回绑定 schema 的模型实例；离线返回 None。"""
+        """在线：返回绑定 schema 的模型实例；离线返回 None。
+
+        include_raw=True 保留原始 AIMessage 以读取 token 用量；
+        解析失败与调用异常同样返回 None，由调用方走确定性规则兜底。
+        """
         if self.disabled:
             return None
         if not self._api_key():
@@ -72,11 +101,18 @@ class LLMClient:
             return None
         llm = self._build_llm(temperature=0.0)
         self.calls += 1
+        t0 = time.perf_counter()
         try:
-            bound = llm.with_structured_output(pydantic_model)
-            return bound.invoke(prompt)
+            bound = llm.with_structured_output(pydantic_model, include_raw=True)
+            payload = bound.invoke(prompt)
         except Exception:
             return None
+        finally:
+            self.latency_ms += (time.perf_counter() - t0) * 1000
+        if not isinstance(payload, dict) or payload.get("parsing_error"):
+            return None
+        self._record_usage(payload.get("raw"))
+        return payload.get("parsed")
 
     def generate(self, system: str, user: str) -> Optional[str]:
         """在线：自由文本生成最终答案；离线返回 None。"""
@@ -86,11 +122,15 @@ class LLMClient:
             return None
         llm = self._build_llm(temperature=0.0)
         self.calls += 1
+        t0 = time.perf_counter()
         try:
             resp = llm.invoke([("system", system), ("human", user)])
-            return getattr(resp, "content", str(resp))
         except Exception:
             return None
+        finally:
+            self.latency_ms += (time.perf_counter() - t0) * 1000
+        self._record_usage(resp)
+        return getattr(resp, "content", str(resp))
 
 
 # 进程级单例

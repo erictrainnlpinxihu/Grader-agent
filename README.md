@@ -133,14 +133,12 @@ cd grader-console && npm install && npm run dev   # http://localhost:5173，/api
 
 ## 效果一览
 
-- RAG 检索示例：
+- 意图识别与规划：
 ![RAG 示例](./pictures/p1.png)
-- HITL 审批示例：
-![HITL 示例](./pictures/p2.png)
 - checkpoint & resume：
 ![checkpoint & resume 示例](./pictures/p3.png)
-- Eval 回归示例：
-![Eval 回归示例](./pictures/p4.png)
+- 评分：
+![HITL 示例](./pictures/p2.png)
 
 ---
 

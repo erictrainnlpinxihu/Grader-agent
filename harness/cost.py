@@ -20,6 +20,9 @@ class CostGovernor:
         tool_calls: int = 0,
         llm_calls: int = 0,
         tokens: int = 0,
+        llm_latency_ms: float = 0.0,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
     ) -> dict[str, Any]:
         return {
             "schema_version": "grader_cost_v1",
@@ -28,6 +31,12 @@ class CostGovernor:
             "tokens_used": tokens,
             "tokens_budget": self.token_budget,
             "budget_ratio": round(tokens / max(self.token_budget, 1), 4),
+            # 真实模型开销（离线 / 缺 key 的短路调用为 0）：
+            # 耗时按请求前后差值、token 按在线回包 usage 累计。
+            "llm_latency_ms": round(llm_latency_ms, 1),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_llm_tokens": prompt_tokens + completion_tokens,
             "safety_boundary": {
                 "cost_does_not_skip_business_facts": True,
                 "cost_does_not_skip_hitl": True,

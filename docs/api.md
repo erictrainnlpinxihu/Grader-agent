@@ -121,8 +121,18 @@ curl -s http://localhost:8000/manifest | python -m json.tool
 | `tool_calls` | object[] | 本轮只读工具调用，元素含 `tool_name`/`args`/`output_summary`/`status`/`safety` |
 | `citations` | object[] | 引用，元素含 `source`/`title`/`score`/`retrieval_stage` |
 | `trace_events` | object[] | 本轮公开 trace 事件（`grader_trace_v1`，已脱敏） |
-| `session_state` | object | 公开状态：`routing` / `workflow` / `batch` / `cost_summary` |
-| `cost_summary` | object | 成本统计与安全边界（`tool_call_count`/`llm_call_count`/`tokens_used`/`safety_boundary`） |
+| `latency` | object | 请求级时延（`grader_latency_v1`）：`total_ms` / `llm_ms` / `llm_calls` / `phases`（perceive/plan/act/observe/respond 分段毫秒；早退路径无分段）。模型耗时只计真实在线调用，离线恒为 0 |
+| `session_state` | object | 公开状态：`routing`（含 `guard_chain` 守卫链）/ `plan` / `workflow` / `batch` / `cost_summary` |
+| `cost_summary` | object | 成本统计与安全边界（`tool_call_count`/`llm_call_count`/`tokens_used`/`llm_latency_ms`/`prompt_tokens`/`completion_tokens`/`total_llm_tokens`/`safety_boundary`）；token 用量取自在线回包 usage，离线为 0 |
+
+`session_state.routing.guard_chain`：plan → act 之间四道确定性闸的逐条结果，元素 `{check, verdict, reason}`——
+`check` ∈ `protected_intent_net` / `rule_guard` / `veto_intent` / `rule_veto`，
+`verdict` ∈ `pass` / `override` / `escalate` / `veto` / `block`。
+
+`session_state.plan`：plan 阶段的结构化改写与最终计划——
+`rewritten_query` / `sub_questions` / `entities`（submission_id/course_id/assignment_id）/
+`confidence` / `source`（`deterministic_map` 或 `llm_with_policy_constraints`）/ `required_tools` /
+`knowledge_domains` / `risk_level` / `fallback_policy`。
 
 `grading_draft` 结构：
 

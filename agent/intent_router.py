@@ -135,9 +135,27 @@ class IntentRouter:
     ) -> tuple[RoutePlanCandidate, dict[str, Any]]:
         """返回 (route_plan, guard_meta)。
 
-        guard_meta 记录是否被守卫改写，供 trace / session_state 断言。
+        guard_meta 记录是否被守卫改写与逐道闸的守卫链，供 trace / session_state
+        断言与调试台展示。chain 每项 {check, verdict, reason}，
+        verdict ∈ pass / override / escalate / veto / block。
         """
-        guard_meta: dict[str, Any] = {"guard_override": False, "guard_reason": None}
+        guard_meta: dict[str, Any] = {
+            "guard_override": False,
+            "guard_reason": None,
+            "chain": [
+                {"check": "protected_intent_net", "verdict": "pass", "reason": ""},
+                {"check": "rule_guard", "verdict": "pass", "reason": ""},
+                {"check": "veto_intent", "verdict": "pass", "reason": ""},
+                {"check": "rule_veto", "verdict": "pass", "reason": ""},
+            ],
+        }
+
+        def _mark(check: str, verdict: str, reason: str) -> None:
+            for entry in guard_meta["chain"]:
+                if entry["check"] == check:
+                    entry["verdict"] = verdict
+                    entry["reason"] = reason
+
         text = rewrite.rewritten_query
 
         # 1. 得到候选路由
@@ -149,6 +167,7 @@ class IntentRouter:
         if protected and plan.intent != protected:
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = f"keyword_guardrail_{protected}"
+            _mark("protected_intent_net", "override", f"keyword_guardrail_{protected}")
             plan = _plan_for_intent(protected, runtime_context)
 
         # 2. rule_guard：正向锁定（安全 / 权限 / 高风险边界）。
@@ -157,6 +176,7 @@ class IntentRouter:
         if blocked:
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = reason
+            _mark("rule_guard", "block", reason)
             plan = _build_plan(
                 "security_request", "deterministic_block",
                 confidence=1.0, fallback_policy=reason,
@@ -172,6 +192,7 @@ class IntentRouter:
             )
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = reason
+            _mark("rule_guard", "escalate", reason)
             return plan, guard_meta
 
         # 3a. rule_veto ①：逆向否决意图——消息显式语义与当前意图矛盾时采纳显式信号
@@ -179,6 +200,7 @@ class IntentRouter:
         if corrected and corrected != plan.intent:
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = f"rule_veto_{corrected}"
+            _mark("veto_intent", "override", f"rule_veto_{corrected}")
             plan = _plan_for_intent(corrected, runtime_context)
 
         # 3b. rule_veto ②：执行前复核 route_kind × 风险 × 角色
@@ -186,6 +208,7 @@ class IntentRouter:
         if vetoed:
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = veto_reason
+            _mark("rule_veto", "veto", veto_reason)
             plan = self._veto_fallback(plan, runtime_context, veto_reason)
 
         return plan, guard_meta

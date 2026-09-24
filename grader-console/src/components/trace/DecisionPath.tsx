@@ -4,6 +4,8 @@ import { StageTimeline } from './StageTimeline';
 import { ToolCallCard } from './ToolCallCard';
 import { LoopCounter } from './LoopCounter';
 import { RagPanel } from './RagPanel';
+import { PlanGuardPanel } from './PlanGuardPanel';
+import { PerformanceCard } from './PerformanceCard';
 import { GradingDraftView } from '../grading/GradingDraftView';
 import { ROUTE_COLOR, signalColor, signalHint } from './tagColors';
 
@@ -62,6 +64,8 @@ export function DecisionPath({ resp }: { resp: ChatResponse | null }) {
 
       <StageTimeline resp={resp} />
 
+      <PlanGuardPanel resp={resp} />
+
       {toolCalls.length > 0 && (
         <div className="detail-card">
           <div className="head">
@@ -77,6 +81,8 @@ export function DecisionPath({ resp }: { resp: ChatResponse | null }) {
       <RagPanel citations={resp.citations} cacheHit={resp.session_state.rag?.cache_hit} />
 
       {resp.grading_draft && <GradingDraftView draft={resp.grading_draft} />}
+
+      <PerformanceCard resp={resp} />
 
       <div className="detail-card">
         <div className="head">

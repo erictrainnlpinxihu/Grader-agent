@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -77,15 +78,45 @@ class GraderAgent:
     # ==================================================================
     # 主入口
     # ==================================================================
+    @staticmethod
+    def _llm_snapshot() -> dict[str, float]:
+        """LLM 单例计数器快照（调用数 / 累计耗时 / token），供请求前后差值。"""
+        llm = get_llm_client()
+        return {
+            "calls": llm.calls,
+            "latency_ms": llm.latency_ms,
+            "prompt_tokens": llm.prompt_tokens,
+            "completion_tokens": llm.completion_tokens,
+        }
+
+    @staticmethod
+    def _telemetry(
+        t_start: float,
+        snap: dict[str, float],
+        phases: Optional[dict[str, float]] = None,
+    ) -> dict[str, Any]:
+        """请求级时延：总耗时 + 真实模型耗时（五阶段分段，早退路径无分段）。"""
+        llm = get_llm_client()
+        return {
+            "schema_version": "grader_latency_v1",
+            "total_ms": round((time.perf_counter() - t_start) * 1000, 1),
+            "llm_ms": round(llm.latency_ms - snap["latency_ms"], 1),
+            "llm_calls": llm.calls - snap["calls"],
+            "phases": phases or {},
+        }
+
     def chat(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request["session_id"]
         text = request.get("text", "")
 
+        # 请求级遥测基准：总耗时按 wall clock；模型调用 / 耗时 / token 按
+        # LLM 单例计数器的请求前后差值（真实在线调用才计数，离线为 0）。
+        t_start = time.perf_counter()
+        llm_snap = self._llm_snapshot()
+
         # ---------- 1. perceive ----------
-        # 每请求一套 hooks（工具前后 / 错误 / 完成事件进 trace）；成本按
-        # LLM 单例计数器的请求前后差值取本请求真实模型调用数。
+        # 每请求一套 hooks（工具前后 / 错误 / 完成事件进 trace）。
         hooks = HookManager(self.trace_store)
-        llm_calls_start = get_llm_client().calls
         rt = self._build_runtime_context(request)
         safety = inspect_source("user_message", text, UNTRUSTED)
         self.trace_store.add(
@@ -98,6 +129,7 @@ class GraderAgent:
                 {"source_safety": {k: safety[k] for k in ("tainted", "matched_pattern", "length", "sha256")}},
             )
         )
+        t_perceive = time.perf_counter()
 
         # ---------- 2. plan ----------
         mem = self._memory.get(session_id, {})
@@ -132,6 +164,7 @@ class GraderAgent:
             k in text for k in ("申请", "提交", "推荐")
         ):
             route_plan = self._escalate_deferred_exam(route_plan, rt)
+        t_plan = time.perf_counter()
 
         # ---------- 3. act ----------
         tool_results: list[dict[str, Any]] = []
@@ -201,7 +234,7 @@ class GraderAgent:
             self.trace_store.add(
                 make_event("permission_denied", session_id, {"error": str(exc)})
             )
-            return self._deny_response(session_id, route_plan, rt, str(exc))
+            return self._deny_response(session_id, route_plan, rt, str(exc), t_start, llm_snap)
         except Exception as exc:  # noqa: BLE001
             # 单条坏输入（如模型产出畸形计划 / 工具名）不得冒泡成 HTTP 500：
             # 记录可观测事件后降级直答，实现请求级隔离，不影响其他会话。
@@ -212,7 +245,8 @@ class GraderAgent:
                     {"error_type": type(exc).__name__, "error": str(exc)[:200]},
                 )
             )
-            return self._degraded_response(session_id, route_plan)
+            return self._degraded_response(session_id, route_plan, t_start, llm_snap)
+        t_act = time.perf_counter()
 
         # ---------- 4. observe ----------
         observe_ctx = self.context_builder.build(
@@ -236,11 +270,7 @@ class GraderAgent:
                 },
             )
         )
-        cost_summary = self.cost.build_cost_summary(
-            tool_calls=len(tool_results),
-            llm_calls=get_llm_client().calls - llm_calls_start,
-            tokens=len(text),
-        )
+        t_observe = time.perf_counter()
 
         # ---------- 5. respond ----------
         composed = self.final_composer.compose(
@@ -276,6 +306,28 @@ class GraderAgent:
             route_kind=route_plan.route_kind,
             next_action=composed.get("next_action", "answer_user"),
         )
+        t_respond = time.perf_counter()
+
+        # 时延与成本：respond 之后统计，把最终模型生成（在线润色 / 结构化初批）
+        # 一并计入本请求；安全边界不变——只记账，不跳业务事实与 HITL。
+        phases = {
+            "perceive_ms": round((t_perceive - t_start) * 1000, 1),
+            "plan_ms": round((t_plan - t_perceive) * 1000, 1),
+            "act_ms": round((t_act - t_plan) * 1000, 1),
+            "observe_ms": round((t_observe - t_act) * 1000, 1),
+            "respond_ms": round((t_respond - t_observe) * 1000, 1),
+        }
+        latency = self._telemetry(t_start, llm_snap, phases)
+        llm_now = self._llm_snapshot()
+        cost_summary = self.cost.build_cost_summary(
+            tool_calls=len(tool_results),
+            llm_calls=llm_now["calls"] - llm_snap["calls"],
+            tokens=len(text),
+            llm_latency_ms=llm_now["latency_ms"] - llm_snap["latency_ms"],
+            prompt_tokens=llm_now["prompt_tokens"] - llm_snap["prompt_tokens"],
+            completion_tokens=llm_now["completion_tokens"] - llm_snap["completion_tokens"],
+        )
+
         response: dict[str, Any] = {
             "session_id": session_id,
             "answer": answer,
@@ -289,15 +341,34 @@ class GraderAgent:
             "tool_calls": tool_obs,
             "next_action": composed.get("next_action", "answer_user"),
             "needs_human_approval": composed.get("needs_human_approval", False),
+            "latency": latency,
             "session_state": {
                 "routing": {
                     "intent": route_plan.intent,
                     "route_kind": route_plan.route_kind,
                     "guard_override": guard_meta["guard_override"],
                     "guard_reason": guard_meta["guard_reason"],
+                    "guard_chain": guard_meta.get("chain", []),
                     "confidence": route_plan.confidence,
                     "source": route_plan.source,
                     "candidate_applied": route_plan.source == "llm_with_policy_constraints",
+                },
+                # plan 阶段的结构化改写与最终计划：供调试台展示"模型提议了什么"
+                "plan": {
+                    "rewritten_query": rewrite.rewritten_query,
+                    "sub_questions": rewrite.sub_questions,
+                    "entities": {
+                        "submission_id": rewrite.submission_id,
+                        "course_id": rewrite.course_id,
+                        "assignment_id": rewrite.assignment_id,
+                    },
+                    "confidence": route_plan.confidence,
+                    "source": route_plan.source,
+                    "candidate_applied": route_plan.source == "llm_with_policy_constraints",
+                    "required_tools": route_plan.required_tools,
+                    "knowledge_domains": route_plan.knowledge_domains,
+                    "risk_level": route_plan.risk_level,
+                    "fallback_policy": route_plan.fallback_policy,
                 },
                 "rag": {"cache_hit": rag_cache_hit},
                 "workflow": self._workflow_state(session_id, pending_approval),
@@ -677,7 +748,13 @@ class GraderAgent:
         )
 
     def _deny_response(
-        self, session_id: str, route_plan: Any, rt: RuntimeContext, reason: str
+        self,
+        session_id: str,
+        route_plan: Any,
+        rt: RuntimeContext,
+        reason: str,
+        t_start: float,
+        llm_snap: dict[str, float],
     ) -> dict[str, Any]:
         return {
             "session_id": session_id,
@@ -691,10 +768,17 @@ class GraderAgent:
             "citations": [],
             "next_action": "blocked",
             "needs_human_approval": False,
+            "latency": self._telemetry(t_start, llm_snap),
             "session_state": {"routing": {"guard_override": True, "guard_reason": reason}},
         }
 
-    def _degraded_response(self, session_id: str, route_plan: Any) -> dict[str, Any]:
+    def _degraded_response(
+        self,
+        session_id: str,
+        route_plan: Any,
+        t_start: float,
+        llm_snap: dict[str, float],
+    ) -> dict[str, Any]:
         """act 阶段未预期异常的降级响应：HTTP 200，不产草稿 / 不开审批。"""
         return {
             "session_id": session_id,
@@ -708,6 +792,7 @@ class GraderAgent:
             "citations": [],
             "next_action": "degraded",
             "needs_human_approval": False,
+            "latency": self._telemetry(t_start, llm_snap),
             "session_state": {"system": {"degraded": True}},
         }
 

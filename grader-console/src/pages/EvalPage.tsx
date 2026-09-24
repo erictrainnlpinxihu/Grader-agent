@@ -60,6 +60,7 @@ function toChatResponse(raw: Record<string, unknown>): ChatResponse {
     tool_calls: r.tool_calls ?? [],
     next_action: r.next_action ?? 'answer_user',
     needs_human_approval: r.needs_human_approval ?? false,
+    latency: r.latency,
     session_state: r.session_state ?? {},
     cost_summary: r.cost_summary ?? {},
   } as ChatResponse;

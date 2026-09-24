@@ -26,7 +26,8 @@ const STAGES: Stage[] = [
     desc: (r) => {
       const rt = r.session_state.routing;
       const conf = rt?.confidence !== undefined ? `（置信度 ${(rt.confidence * 100).toFixed(0)}%）` : '';
-      return `${r.intent} → ${r.route_kind}${conf}`;
+      const src = rt?.candidate_applied ? ' · LLM 候选' : ' · 规则映射';
+      return `${r.intent} → ${r.route_kind}${conf}${src}`;
     },
   },
   {
@@ -49,9 +50,9 @@ const STAGES: Stage[] = [
     desc: (r) => {
       const c = r.cost_summary;
       const bits: string[] = [];
-      if (c.tool_calls !== undefined) bits.push(`工具 ${c.tool_calls} 次`);
-      if (c.llm_calls !== undefined) bits.push(`模型 ${c.llm_calls} 次`);
-      if (c.tokens !== undefined) bits.push(`${c.tokens} tokens`);
+      if (c?.tool_call_count !== undefined) bits.push(`工具 ${c.tool_call_count} 次`);
+      if (c?.llm_call_count !== undefined) bits.push(`模型 ${c.llm_call_count} 次`);
+      if (c?.total_llm_tokens) bits.push(`模型 ${c.total_llm_tokens} tokens`);
       return bits.length ? bits.join(' · ') : '上下文已构建';
     },
   },

@@ -95,6 +95,16 @@ body {
   margin-bottom: var(--space-2);
 }
 
+/* 性能 / 成本指标瓦片 */
+.stat-tile {
+  min-width: 108px;
+  padding: 8px 12px;
+  border: 1px solid var(--clr-border-light);
+  border-radius: var(--radius-card);
+  background: var(--clr-bg-page);
+  line-height: 1.5;
+}
+
 /* 状态机步骤条 */
 .sm-flow {
   display: flex;
