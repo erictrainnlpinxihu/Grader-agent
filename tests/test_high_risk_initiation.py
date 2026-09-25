@@ -1,9 +1,9 @@
 """高风险 workflow 的"发起权 vs 审批权"回归测试。
 
 权限模型：
-- student 可以申诉成绩、咨询 / 举报学术不端、申请缓考（发起立案，只产提案、暂停等审批）；
-- ta 可以立案复核与初批；
-- 终录成绩 / 学术不端终判 / 缓考推荐是 instructor 专属，student / ta 即便拿到
+- student 可以申诉成绩、咨询 / 反映学术不端、申请缓考（发起转交，只产提案、暂停等审批）；
+- ta 可以提请复核与初批；
+- 终录成绩 / 学术不端最终认定 / 缓考推荐是 instructor 专属，student / ta 即便拿到
   resume_token 审批也会被 blocked/approver_not_authorized。
 
 另覆盖：在线模型把"算不算学术不端"误判为 grading 时，受保护关键词安全网强制纠偏。
@@ -53,7 +53,7 @@ def _resume(agent: GraderAgent, session_id: str, token: str, approver_id: str) -
 
 
 # ---------------------------------------------------------------------------
-# 1. 发起权：student / ta 都可对学术不端疑问立案，系统不自动处分
+# 1. 发起权：student / ta 都可对学术不端疑问发起转交，系统不自动处分
 # ---------------------------------------------------------------------------
 def test_student_academic_integrity_enters_workflow() -> None:
     agent = GraderAgent()
@@ -89,7 +89,7 @@ def test_student_appeal_enters_workflow_with_record_action() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. 审批权：仅 instructor 可终判；student / ta 审批被 blocked 且不改状态
+# 2. 审批权：仅 instructor 可最终认定；student / ta 审批被 blocked 且不改状态
 # ---------------------------------------------------------------------------
 def test_student_and_ta_cannot_approve_only_instructor_can() -> None:
     agent = GraderAgent()

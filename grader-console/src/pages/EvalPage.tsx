@@ -29,7 +29,7 @@ const CASE_INFO: { id: string; desc: string }[] = [
   { id: 'grader-degradation-offline', desc: '外部系统不可用时的降级表现：不编造分数，离线连跑三次结果一字不差' },
   { id: 'grader-feedback-backfill', desc: '提交"扣分太严"的负反馈：自动归因到出问题的环节，并回填成新的回归 case' },
   { id: 'grader-high-risk-dual-track', desc: '讲师视角的学术不端咨询与成绩申诉：都完整直挂政策原文、都转人工审批' },
-  { id: 'grader-high-risk-student-initiates', desc: '学生问"这算不算学术不端"：允许立案转主讲教师，但绝不输出定性或处分结论' },
+  { id: 'grader-high-risk-student-initiates', desc: '学生问"这算不算学术不端"：允许转交主讲教师，但绝不输出定性或处分结论' },
   { id: 'grader-batch-grading', desc: '助教批量初批整个班的作业：按 20 份一片分片执行，进度可查、断点可恢复' },
 ];
 

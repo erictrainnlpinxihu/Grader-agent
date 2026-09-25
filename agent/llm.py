@@ -65,7 +65,11 @@ class LLMClient:
             temperature=temperature,
             base_url=self._base_url(),
             api_key=self._api_key() or "missing",
-            timeout=20.0,
+            # 在线结构化输出实测可达数十秒甚至更久（高峰期路由分类 >120s），
+            # 与前端 300s 请求预算对齐；不做 SDK 重试——超时/失败直接走
+            # 确定性规则兜底，避免重试叠加撑爆前端超时。
+            timeout=300.0,
+            max_retries=0,
         )
         return self._llm
 
@@ -103,7 +107,13 @@ class LLMClient:
         self.calls += 1
         t0 = time.perf_counter()
         try:
-            bound = llm.with_structured_output(pydantic_model, include_raw=True)
+            bound = llm.with_structured_output(
+                pydantic_model,
+                # Qwen 系模型走 json_schema（默认路径）易产出非对象 JSON 导致
+                # 解析失败（实测 0/3）；tool calling 路径稳定（实测 3/3），显式指定。
+                method="function_calling",
+                include_raw=True,
+            )
             payload = bound.invoke(prompt)
         except Exception:
             return None

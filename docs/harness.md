@@ -16,7 +16,7 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 | 说什么（意图） | 越权指令被弱化理解 / 意图被误判 | 守卫（plan 与 act 之间） | rule_guard 正向锁定 + rule_veto 逆向否决（意图纠错 / 计划复核） | §3 |
 | 看什么（输入可信度） | 作业正文夹带注入指令 | source_guard | 三级信任标 + 6 条注入正则 + 原文只记哈希 | §4 |
 | 查什么（工具） | 越权读、模型发明写工具 | 只读白名单对账 | 6 只读工具白名单 + 参数级权限 + 非白名单剥离 | §3.1 |
-| 动不动手（写动作） | 不可逆录分 / 终判 / 公开评语 | ApprovalGate | 只产 HighRiskProposal + 冻结现场 + 审批授权 + 三道闸 | §5 |
+| 动不动手（写动作） | 不可逆录分 / 最终认定 / 公开评语 | ApprovalGate | 只产 HighRiskProposal + 冻结现场 + 审批授权 + 三道闸 | §5 |
 | 信什么（上下文） | 过期 / 冲突的事实 | ContextBuilder | 五级信任序 + 冲突仲裁 + 历史压缩 | §6 |
 | 花多少钱（成本） | 省钱侵蚀正确性 | CostGovernor | 只砍模型生成，不砍事实核对与 HITL | §8 |
 | 留什么痕（可观测） | PII / 推理链泄漏 | TraceStore | grader_trace_v1 递归脱敏 + 公开 trace 与 hidden CoT 隔离 | §7 |
@@ -53,10 +53,10 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 | 产初批草稿 | ❌ | ✅ | ✅ |
 | 批量初批 | ❌ | ✅ | ✅ |
 | 终录成绩（审批） | ❌ | ❌ | ✅ |
-| 学术不端终判（审批） | ❌ | ❌ | ✅ |
-| 发起申诉 / 学术不端咨询·举报 / 缓考申请（立案） | ✅ | ✅ | ✅ |
+| 学术不端最终认定（审批） | ❌ | ❌ | ✅ |
+| 发起申诉 / 学术不端咨询·反映 / 缓考申请（转交） | ✅ | ✅ | ✅ |
 
-**发起权与审批权是两件事。** 立案在 chat 阶段只产提案并暂停、没有副作用，因此对 student / ta 开放；真正 instructor 专属的是 resume 阶段的"批准 / 终录 / 终判"，由 ApprovalGate 的审批授权闸强制（§5.2）。
+**发起权与审批权是两件事。** 转交在 chat 阶段只产提案并暂停、没有副作用，因此对 student / ta 开放；真正 instructor 专属的是 resume 阶段的"批准 / 终录 / 最终认定"，由 ApprovalGate 的审批授权闸强制（§5.2）。
 
 身份仲裁发生在 perceive：`get_instructor_roster(course_id)` 返回授课名单，`user_id` 命中哪一级就是哪一级；`claimed_role` 与仲裁结果不符时记 `identity_claim_override_rejected`。权限不只守在路由层——**工具层还有参数级二次防护**：`get_submission` / `get_student_history` 中 student 请求他人数据直接 `PermissionError`。即使路由被诱导，越权读也在执行点被挡住。
 
@@ -87,7 +87,7 @@ Grader 的护栏**写在代码里，不写在 prompt 里**。模型可以理解�
 
 **模型为什么会误判意图？** 语义分类本质是概率性的：口语化表述（"这作业跟别人挺像的，没事吧？"）与 few-shot 样例不匹配；意图边界本身模糊（一句带情绪的"不服"是申诉还是抱怨？）；长尾说法在训练分布之外。`with_structured_output` 只约束**输出格式合法**，不保证**分类正确**，且错误方向不可预测。对普通业务意图，判错只是答非所问、下一轮能纠正；对受保护意图，"判轻"意味着绕过审批与转人工——所以宁可信其有，由关键词锁定兜底，这条规则写在代码里而不是 prompt 里。
 
-一个刻意的例外：高风险意图（申诉 / 学术不端咨询·举报）在 guard **不拦、反而强制升级**为转人工。申诉是学生应有的权利、立案又无副作用，拦掉才是错的——要保证的只是它必须走人工审批。升级同样属于 guard 命中：计划已钉死为 `workflow_human`，守卫链就此终结。
+一个刻意的例外：高风险意图（申诉 / 学术不端咨询·反映）在 guard **不拦、反而强制升级**为转人工。申诉是学生应有的权利、转交又无副作用，拦掉才是错的——要保证的只是它必须走人工审批。升级同样属于 guard 命中：计划已钉死为 `workflow_human`，守卫链就此终结。
 
 **第二类：意图被误判，而且用户说得很明确——veto 逆向否决意图。** 关键词锁定只保护三类受保护意图、只做升险方向，管不了普通业务意图之间的矛盾："只是问 rubric 怎么评，不是让你批"——模型给了 `grading_request`，消息里的显式否定与之冲突。对这类高置信的显式矛盾（"不是 X，是 Y"式），veto 否决当前意图、按显式信号重建计划（trace 记 `rule_veto_<intent>`）。原则：**用户的显式信号 > 模型的猜测**；规则刻意保守，只覆盖否定信号与明确指向同时命中的情况，拿不准时不纠、宁可下一轮澄清。
 
@@ -121,7 +121,7 @@ flowchart TD
 
 `rule_guard` 命中即终结守卫链：钉死（红线 / 学生批量 → 固定拒绝话术直答）或强制升级（高风险 → `workflow_human` 进 act）。`rule_veto` ① 意图否决：显式矛盾 → 按显式信号重建计划（候选作废）。`rule_veto` ② 计划复核命中：降级为安全路由——`task_planner` 落低置信澄清、student 的初批请求落"已转交教学人员"话术；两类降级都**不产草稿、不开 checkpoint、不触发任何写动作**。
 
-**student / ta 发起高风险立案不在 veto 之列**——立案只产提案、暂停等审批，无副作用；发起 ≠ 审批，instructor 专属的终录 / 终判由审批端闸 0 强制（§5.2）。所有改写记录在 `guard_meta` 与 `session_state.routing`，并写 `rule_guard_overridden` trace。
+**student / ta 发起高风险转交不在 veto 之列**——转交只产提案、暂停等审批，无副作用；发起 ≠ 审批，instructor 专属的终录 / 最终认定由审批端闸 0 强制（§5.2）。所有改写记录在 `guard_meta` 与 `session_state.routing`，并写 `rule_guard_overridden` trace。
 
 ### 3.3 候选计划的三层确定性约束
 
@@ -164,7 +164,7 @@ flowchart TD
 
 ## 5. 高风险动作：ApprovalGate
 
-4 个不可逆动作——`record_final_grade`（终录）、`judge_academic_misconduct`（终判不端）、`recommend_deferred_exam`（缓考推荐）、`publish_feedback`（公开评语）——**物理上不是工具**：模型在只读回路里看不到它们，只能把它们包成 `HighRiskProposal` 等讲师审批。ApprovalGate 就是这套"只提案、不执行"的状态机。
+4 个不可逆动作——`record_final_grade`（终录）、`judge_academic_misconduct`（认定不端）、`recommend_deferred_exam`（缓考推荐）、`publish_feedback`（公开评语）——**物理上不是工具**：模型在只读回路里看不到它们，只能把它们包成 `HighRiskProposal` 等讲师审批。ApprovalGate 就是这套"只提案、不执行"的状态机。
 
 ### 5.1 单份作业状态机
 
@@ -201,7 +201,7 @@ stateDiagram-v2
 
 恢复时先过**审批授权**，再按顺序连过三道闸，任一不过即停：
 
-0. **审批授权闸**：用授课名单快照仲裁审批人真实角色，只有 instructor 进入后续。student / ta 即便持有合法 resume_token 也直接 `blocked / approver_not_authorized`——**不迁移状态、不写幂等表，立案保留**，提示转主讲教师处理。这一闸把"发起 ≠ 审批"落成代码。
+0. **审批授权闸**：用授课名单快照仲裁审批人真实角色，只有 instructor 进入后续。student / ta 即便持有合法 resume_token 也直接 `blocked / approver_not_authorized`——**不迁移状态、不写幂等表，转交记录保留**，提示转主讲教师处理。这一闸把"发起 ≠ 审批"落成代码。
 1. **resume 令牌闸**：token 找不到 checkpoint → `blocked / invalid_resume_token`。token 是一次性、不可猜测的随机串，把恢复请求绑定到唯一一个被冻结的审批现场——但 token 只是能力证明，不是身份证明，身份由闸 0 仲裁。
 2. **business_recheck 现场复核闸**：恢复前重新拉一次 LMS，逐字段比对冻结值与当前值，任一不同 → `blocked / business_fact_drift`（见 §5.3）。
 3. **幂等键闸**：键 = `sha256(submission_id | rubric_version | approved_instructor_id | UTC 日期桶)`，重复恢复返回 `idempotent_replay`、不再产生副作用——同一次批准不会落地两遍。

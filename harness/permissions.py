@@ -32,7 +32,7 @@ def can_record_final_grade(role: str) -> bool:
 
 
 def can_judge_misconduct(role: str) -> bool:
-    """学术不端终判：仅 instructor。"""
+    """学术不端最终认定：仅 instructor。"""
     return role == "instructor"
 
 

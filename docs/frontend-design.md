@@ -46,7 +46,7 @@ npm run dev        # http://localhost:5173，/api 已代理到 :8000
 | `recorded` | 绿色成功 + `recorded_actions` 清单 |
 | `rejected` | 红色"已退回" |
 | `paused` | 橙色"已暂停，等待补充材料" |
-| `blocked` + `approver_not_authorized` | 红色"仅主讲教师有权审批，立案保留"（闸 0） |
+| `blocked` + `approver_not_authorized` | 红色"仅主讲教师有权审批，转交记录保留"（闸 0） |
 | `blocked` + `invalid_resume_token` | 红色"令牌无效或已过期" |
 | `blocked` + `business_fact_drift` | 琥珀色警告 + 漂移字段，可重新批改 |
 | `idempotent_replay=true` | 灰色"重复提交命中幂等，不重复执行" |

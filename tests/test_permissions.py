@@ -46,7 +46,7 @@ def test_student_cannot_record_final_grade():
 
 
 def test_ta_cannot_judge_misconduct():
-    # TA 不能终判学术不端（仅 instructor）
+    # TA 不能最终认定学术不端（仅 instructor）
     from harness.permissions import can_judge_misconduct
 
     assert can_judge_misconduct("ta") is False

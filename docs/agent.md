@@ -144,8 +144,8 @@ flowchart TD
 | `rubric_query` | `rag` | 域 `rubric_knowledge` | |
 | `syllabus_material_query` | `rag` | 域 `textbook_chapters` + `grading_sop` | |
 | `deferred_exam_query` | `rag` | 域 `grading_sop` | 文本含"申请 / 提交 / 推荐"→ 升级 `workflow_human` |
-| `grade_appeal` | `workflow_human`（high） | 不调工具，转人工 | 学生可发起申诉（立案）；审批改分仅讲师 |
-| `academic_integrity_question` | `workflow_human`（high） | 转人工，不自动处分 | 学生 / ta 可发起咨询·举报（立案）；终判仅讲师 |
+| `grade_appeal` | `workflow_human`（high） | 不调工具，转人工 | 学生可发起申诉（转交）；审批改分仅讲师 |
+| `academic_integrity_question` | `workflow_human`（high） | 转人工，不自动处分 | 学生 / ta 可发起咨询·反映（转交）；最终认定仅讲师 |
 | `batch_grading` | `task_planner` | `list_submissions` + 分片初批 | 仅 ta / instructor |
 | `general_chat` | `deterministic` | — | 寒暄直答 |
 | `degradation_request` | `deterministic` | — | 降级话术 |
@@ -156,7 +156,7 @@ flowchart TD
 
 ### 4.3 守卫：架在 plan 与 act 之间
 
-守卫**不是五阶段中的第六个阶段**，而是拦截在 plan 与 act 之间的闸——所谓"横切"（cross-cutting）：控制逻辑不属于主链路的任何一环，却切在主链路的关键位置上。守卫链顺序：候选计划 → 关键词正向锁定（受保护意图被误判为弱意图时强制纠偏）→ `rule_guard` 正向锁定（**命中即终结守卫链**：钉死直答，或升级 workflow 后进 act）→ `rule_veto` ① 逆向否决意图（显式语义与意图矛盾时采纳显式信号）→ `rule_veto` ② 复核计划。守卫改写的是**模型的意图裁量权与计划**，不是润色文案。高风险 workflow 的**发起**对 student / ta 开放（申诉、学术不端咨询 / 举报只产提案、暂停等审批，无副作用）；instructor 专属的终录 / 终判约束在审批端闸 0。分支与触发时机详见 [Harness · 意图边界](./harness.md#3-意图边界正向锁定与逆向否决)。
+守卫**不是五阶段中的第六个阶段**，而是拦截在 plan 与 act 之间的闸——所谓"横切"（cross-cutting）：控制逻辑不属于主链路的任何一环，却切在主链路的关键位置上。守卫链顺序：候选计划 → 关键词正向锁定（受保护意图被误判为弱意图时强制纠偏）→ `rule_guard` 正向锁定（**命中即终结守卫链**：钉死直答，或升级 workflow 后进 act）→ `rule_veto` ① 逆向否决意图（显式语义与意图矛盾时采纳显式信号）→ `rule_veto` ② 复核计划。守卫改写的是**模型的意图裁量权与计划**，不是润色文案。高风险 workflow 的**发起**对 student / ta 开放（申诉、学术不端咨询 / 反映只产提案、暂停等审批，无副作用）；instructor 专属的终录 / 最终认定约束在审批端闸 0。分支与触发时机详见 [Harness · 意图边界](./harness.md#3-意图边界正向锁定与逆向否决)。
 
 ---
 
@@ -205,7 +205,7 @@ flowchart TD
 | `check_similarity` | 取查重率（`flagged = similarity >= 0.8`） | 只读 |
 | `get_submission_timestamp` | 取提交时间戳 | 只读 |
 
-4 个高风险写动作（终录 / 终判不端 / 缓考推荐 / 公开评语）**物理上不在工具表**——模型在这一层"无手可写"，只能在 respond 阶段产出 `HighRiskProposal` 进 HITL。
+4 个高风险写动作（终录 / 认定不端 / 缓考推荐 / 公开评语）**物理上不在工具表**——模型在这一层"无手可写"，只能在 respond 阶段产出 `HighRiskProposal` 进 HITL。
 
 ### 5.3 批量初批
 
@@ -308,7 +308,7 @@ GradingDraft { submission_id, rubric_version,
 
 ## 9. checkpoint 与 resume：高风险动作的暂停与恢复
 
-高风险动作（4 个写动作）在 chat 轮**只立案、不执行**：产出 `HighRiskProposal` 的同时创建 checkpoint、冻结现场、签发一次性 `resume_token`，本轮就此暂停。两类入口：
+高风险动作（4 个写动作）在 chat 轮**只记录转交、不执行**：产出 `HighRiskProposal` 的同时创建 checkpoint、冻结现场、签发一次性 `resume_token`，本轮就此暂停。两类入口：
 
 - `grading_request` 初批 → 草稿落 checkpoint（state=`draft_graded`）；
 - `workflow_human`（申诉 / 学术不端 / 缓考申请）→ 提案落 checkpoint（state=`flagged`）。
@@ -320,7 +320,7 @@ flowchart TD
     A["产出 HighRiskProposal（4 个写动作之一）"] --> F["冻结 4 字段 · 签发 resume_token"]
     F --> WAIT(["暂停 · needs_human_approval · 本轮结束"])
     WAIT -. "POST /approval 或 /chat/resume" .-> G0{"闸0 审批人是该课主讲教师 ?"}
-    G0 -->|否| B0["blocked · approver_not_authorized（立案保留）"]
+    G0 -->|否| B0["blocked · approver_not_authorized（转交记录保留）"]
     G0 -->|是| G1{"闸① resume token 有效 ?"}
     G1 -->|否| B1["blocked · invalid_resume_token"]
     G1 -->|是| G2{"闸② business_recheck：重拉 LMS 比对冻结字段"}

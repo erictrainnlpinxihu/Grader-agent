@@ -4,7 +4,7 @@
 
 恢复时按顺序经过：
 0. 审批授权（approver_role 必须为 instructor，否则 blocked/approver_not_authorized）
-   —— 终录 / 终判 / 推荐是讲师专属；student / ta 可以发起立案，但不能审批自己或他人的提案
+   —— 终录 / 最终认定 / 推荐是讲师专属；student / ta 可以发起转交，但不能审批自己或他人的提案
 1. resume 令牌校验（无效 → blocked/invalid_resume_token）
 2. business_recheck 冻结字段复核（漂移 → blocked/business_fact_drift，返回 drift_field）
 3. 幂等键（submission_id + rubric_version + approved_instructor_id + timestamp_bucket）
@@ -163,8 +163,8 @@ class ApprovalGate:
                 "idempotent_replay": False,
             }
 
-        # 闸 0：审批授权。终录 / 终判 / 推荐是 instructor 专属；
-        # student / ta 可发起立案，但不能审批（gate 默认 instructor，安全缺省）。
+        # 闸 0：审批授权。终录 / 最终认定 / 推荐是 instructor 专属；
+        # student / ta 可发起转交，但不能审批（gate 默认 instructor，安全缺省）。
         if approver_role != "instructor":
             return {
                 "status": "blocked",

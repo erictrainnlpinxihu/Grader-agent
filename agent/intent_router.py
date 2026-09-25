@@ -104,8 +104,17 @@ def _plan_for_intent(intent: str, rt: RuntimeContext) -> RoutePlanCandidate:
         # 咨询走 RAG；正式申请由文本里的"申请"在 loop 内升级为 workflow
         return _build_plan(intent, "rag", needs_rag=True, knowledge_domains=["grading_sop"])
     if intent in {"grade_appeal", "academic_integrity_question"}:
+        # 高风险意图进 HITL 前先做只读取证：把作业与查重事实附进提案，
+        # 供主讲教师复核参考（check_similarity 只是参考信号，最终认定归教师）。
+        # 申诉关注被申诉的成绩事实；学术不端疑问另加查重事实。
         return _build_plan(
             intent, "workflow_human",
+            needs_business_tools=True,
+            required_tools=(
+                ["get_submission", "check_similarity"]
+                if intent == "academic_integrity_question"
+                else ["get_submission"]
+            ),
             requires_workflow=True, risk_level="high", fallback_policy="workflow_first",
         )
     if intent == "batch_grading":
@@ -184,12 +193,10 @@ class IntentRouter:
             return plan, guard_meta
 
         # rule_guard 返回 (False, reason) 表示要求高风险 intent 必须走 workflow_human。
-        # 升级后的发起对 student/ta 开放（审批约束在闸 0），守卫链就此终结
+        # 升级后的发起对 student/ta 开放（审批约束在闸 0），守卫链就此终结。
+        # 复用权威映射生成升级后的计划，保留只读取证工具。
         if reason.startswith("rule_guard_high_risk_") and plan.route_kind != "workflow_human":
-            plan = _build_plan(
-                plan.intent, "workflow_human",
-                requires_workflow=True, risk_level="high", fallback_policy="workflow_first",
-            )
+            plan = _plan_for_intent(plan.intent, runtime_context)
             guard_meta["guard_override"] = True
             guard_meta["guard_reason"] = reason
             _mark("rule_guard", "escalate", reason)

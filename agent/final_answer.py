@@ -128,7 +128,7 @@ class FinalAnswerComposer:
 
         # workflow_human 分支（已由 loop 创建 checkpoint）
         if route_kind == "workflow_human":
-            return self._workflow(intent, rag_results)
+            return self._workflow(intent, rag_results, tool_results)
 
         # rag 分支
         if route_kind == "rag":
@@ -249,7 +249,12 @@ class FinalAnswerComposer:
         }
 
     # ------------------------------------------------------------------
-    def _workflow(self, intent: str, rag_results: list[dict[str, Any]]) -> dict[str, Any]:
+    def _workflow(
+        self,
+        intent: str,
+        rag_results: list[dict[str, Any]],
+        tool_results: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
         if intent == "grade_appeal":
             answer = "已收到你的申诉，将转交主讲教师复核。申诉期间原判定暂缓执行。"
         elif intent == "deferred_exam_query":
@@ -260,7 +265,25 @@ class FinalAnswerComposer:
                 "审批通过前不会变更任何考试安排。"
             )
         else:
-            answer = "已记录学术不端相关疑问，将转交主讲教师复核证据。系统不自动处分。"
+            # 学术不端疑问：有查重取证时先把事实告诉用户（事实与定性分离——
+            # 相似度只是参考信号，是否构成学术不端由教师最终认定）。
+            sim = next(
+                (
+                    t.get("result") or {}
+                    for t in (tool_results or [])
+                    if t.get("tool_name") == "check_similarity" and t.get("result")
+                ),
+                {},
+            )
+            if sim:
+                flag = "达到" if sim.get("flagged") else "未达到"
+                answer = (
+                    f"查重事实：该提交当前相似度 {float(sim.get('similarity_score', 0)):.2f}"
+                    f"（{flag}关注阈值 0.80）。查重结果已随材料转交主讲教师复核，"
+                    "是否构成学术不端由教师最终认定，系统不自动处分。"
+                )
+            else:
+                answer = "已记录学术不端相关疑问，将转交主讲教师复核证据。系统不自动处分。"
         return {
             "answer": answer,
             "signals": ["workflow_human", "needs_human_approval"],

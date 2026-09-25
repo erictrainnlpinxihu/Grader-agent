@@ -18,7 +18,7 @@
 
 1. 模型是**可替换的初批提议者**，不是不可质疑的终审人。
 2. **guardrail 写在代码里**（rule_guard / route veto / Pydantic 跨字段校验 / 三级权限矩阵），不写在 prompt 里。
-3. **HITL 是骨架的一等节点**，不是事后补丁；终录/终判/公开评语都是显式人类节点。
+3. **HITL 是骨架的一等节点**，不是事后补丁；终录/最终认定/公开评语都是显式人类节点。
 4. **公开 Trace 与 hidden CoT 从 schema 层隔离**：trace 里只允许出现脱敏后的公开信号，学生 PII（学号/姓名/邮箱/手机号）一律递归脱敏。
 5. **端到端离线可跑可回归**：不依赖真实 LMS、不依赖真实 LLM 也能跑通主链路并断言行为（本地 embedding 替身 + `GRADER_DISABLE_LLM=1`）。
 
@@ -179,7 +179,7 @@ stateDiagram-v2
     request --> freeze_snapshot: 生成 HighRiskProposal
     freeze_snapshot --> pause_for_human: 冻结字段落 checkpoint<br/>submission_body_hash<br/>rubric_version<br/>similarity_score<br/>submission_timestamp
     pause_for_human --> resume_recheck: 讲师 approve/reject/needs_more_info<br/>携带 resume 令牌
-    pause_for_human --> pause_for_human: 闸0 非主讲教师<br/>approver_not_authorized 立案保留
+    pause_for_human --> pause_for_human: 闸0 非主讲教师<br/>approver_not_authorized 转交记录保留
     resume_recheck --> execute_or_abort: 闸0 审批授权 → 闸1 resume 令牌校验
     resume_recheck --> pause_for_human: 闸2 business_recheck<br/>冻结字段漂移 → 拒绝执行<br/>重新排队
     execute_or_abort --> [*]: 闸3 幂等键<br/>防重复执行
@@ -189,7 +189,7 @@ stateDiagram-v2
 
 **审批授权闸 + 三道闸**：
 
-0. **审批授权（闸 0，最先）**：恢复时先用 LMS 授课名单快照仲裁审批人确为该课主讲教师；student / ta 即便持有合法 resume token 也被拒（`blocked/approver_not_authorized`，trace `approver_authorization_denied`），不迁移状态、不写幂等，立案保留。**发起 ≠ 审批**：student / ta 可以发起成绩申诉、学术不端咨询 / 举报（只立案、产 `HighRiskProposal`、暂停等审批，无副作用），但终录 / 终判的审批权仅 instructor。
+0. **审批授权（闸 0，最先）**：恢复时先用 LMS 授课名单快照仲裁审批人确为该课主讲教师；student / ta 即便持有合法 resume token 也被拒（`blocked/approver_not_authorized`，trace `approver_authorization_denied`），不迁移状态、不写幂等，转交记录保留。**发起 ≠ 审批**：student / ta 可以发起成绩申诉、学术不端咨询 / 反映（只转交、产 `HighRiskProposal`、暂停等审批，无副作用），但终录 / 最终认定的审批权仅 instructor。
 1. **resume 令牌校验**：暂停时签发一次性令牌，恢复时校验；令牌错了直接 abort（`blocked/invalid_resume_token`），不执行。
 2. **`business_recheck` 冻结字段**：恢复时重新拉一次现场，与 `freeze_snapshot` 时的快照逐字段比对——`submission_body_hash` 变了 / `rubric_version` 变了 / `similarity_score` 变了 / `submission_timestamp` 变了，任一变化即 `blocked/business_fact_drift`，回到 `pause_for_human` 重新等人工。**business_recheck 三类触发**：审批期间学生补交/换版本、申诉进入、相似度报告更新。
 3. **幂等键**：`action_key = sha256(submission_id + rubric_version + approved_instructor_id + timestamp_bucket)`；重复 resume 不重复执行（`idempotent_replay=true`，`record_final_grade` 只调一次）。
@@ -219,10 +219,10 @@ stateDiagram-v2
 | 查自己作业状态 / rubric / 大纲 | ✅ | ✅ | ✅ |
 | 查他人成绩 / 他人历史 | ❌ | ✅（授课班内） | ✅ |
 | 发起初批（draft_graded） | ❌ | ✅ | ✅ |
-| 发起成绩申诉 / 学术不端咨询·举报（仅立案） | ✅ | ✅ | ✅ |
-| 审批并执行 `record_final_grade` / `judge_academic_misconduct` / `publish_feedback` | ❌ | ❌（只能起草提案） | ✅（审批终录 / 终判） |
+| 发起成绩申诉 / 学术不端咨询·反映（仅转交） | ✅ | ✅ | ✅ |
+| 审批并执行 `record_final_grade` / `judge_academic_misconduct` / `publish_feedback` | ❌ | ❌（只能起草提案） | ✅（审批终录 / 最终认定） |
 
-> **发起权与审批权分离**：立案（chat 阶段产提案、暂停）对 student / ta 开放，因为它没有副作用；审批 / 执行（resume 阶段真正落写动作）仅该课主讲教师。闸 0 在 resume 入口用授课名单快照强制这一点，不靠 prompt。
+> **发起权与审批权分离**：转交（chat 阶段产提案、暂停）对 student / ta 开放，因为它没有副作用；审批 / 执行（resume 阶段真正落写动作）仅该课主讲教师。闸 0 在 resume 入口用授课名单快照强制这一点，不靠 prompt。
 
 **压缩策略**：历史窗口 + token 预算压缩；`context_report` 每轮输出"这个评语用了哪些来源、各打了什么信任标、冲突怎么裁的"，写进 trace。
 
@@ -407,8 +407,8 @@ class BatchState(TypedDict):
 | `assignment_status_query` | 学生/助教查作业状态 | `tool_readonly` |
 | `grading_request` | 请求批改单份作业 | `tool_readonly` + 可能 HITL（draft_graded → 教师 approve） |
 | `rubric_query` | 查 rubric | `rag`（域=`rubric_knowledge`） |
-| `grade_appeal` | 成绩申诉 | `workflow_human`（直挂 academic_integrity_policy）；学生可发起立案，审批改分仅讲师 |
-| `academic_integrity_question` | 学术不端疑问 | `workflow_human`（高风险，直挂政策域）；学生 / ta 可发起咨询·举报，终判仅讲师 |
+| `grade_appeal` | 成绩申诉 | `workflow_human`（直挂 academic_integrity_policy）；学生可发起转交，转交前只读取证 `get_submission`，审批改分仅讲师 |
+| `academic_integrity_question` | 学术不端疑问 | `workflow_human`（高风险，直挂政策域）；学生 / ta 可发起咨询·反映，转交前只读取证 `get_submission`+`check_similarity`（证据只作教师复核参考，不产生定性结论），最终认定仅讲师 |
 | `deferred_exam_query` | 缓考/补考咨询 | `rag`（域=`grading_sop`）+ 可能 HITL |
 | `syllabus_material_query` | 查大纲/迟交扣分等资料 | `rag`（域=`textbook_chapters`） |
 | `batch_grading` | TA 发起 200 份批量批改 | `task_planner` + 多 agent（M2） |
@@ -522,7 +522,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 | **M2：多 agent map/reduce** | `agent/batch_mapreduce.py`：分片并行初批 + lead 横向校准（只建议 ±1 分） | `grader-batch-grading`（升级为 parallelism=N，shard 失败兜底） |
 | **M3：RAG 域路由 + 直挂域** | 4 索引域 + 1 直挂域 + RAGRouteMap + rubric 缓存 | `grader-rubric-query-rag-cachehit`、`grader-syllabus-query-rag`、`grader-deferred-exam-rag-hitl` |
 | **M4：HITL ApprovalGate 审批授权 + 三道闸** | 5 节点状态机 + 4 冻结字段 + 闸 0 审批授权（roster 仲裁仅讲师）+ resume 令牌 + business_recheck + 幂等键 + `/sessions/{id}/approval` 端点 | `grader-hitl-approve-recorded`、`grader-hitl-reject`、`grader-hitl-needs-more-info`、`grader-resume-invalid-token`、`grader-resume-idempotent-replay`、`grader-resume-missing-checkpoint`、`grader-resume-freeze-drift` |
-| **M5：权限双闸 + route guard + 受保护意图安全网** | 三级权限矩阵 + 发起/审批分离（student/ta 可立案、审批仅讲师）+ LMS 身份快照 + identity_claim_override_rejected + route veto + 在线关键词安全网纠偏 | `grader-permission-guard-dual`、`grader-route-guard-security-override`、`grader-high-risk-student-initiates` |
+| **M5：权限双闸 + route guard + 受保护意图安全网** | 三级权限矩阵 + 发起/审批分离（student/ta 可发起转交、审批仅讲师）+ LMS 身份快照 + identity_claim_override_rejected + route veto + 在线关键词安全网纠偏 | `grader-permission-guard-dual`、`grader-route-guard-security-override`、`grader-high-risk-student-initiates` |
 | **M6：防注入 + source_guard 扩大作用域** | 作业正文 Untrusted + 6 条 Grader 注入正则 + 清洗落 trace（位置/长度/sha256/正则名） | `grader-injection-redact`、`grader-general-chat-lowconf-fallback` |
 | **M7：一致性 / 公平性 eval** | `consistency_check` 断言能力 + 匿名化双跑 | `grader-consistency-fairness` |
 | **M8：高风险双分支直挂** | `academic_integrity_question` / `grade_appeal` 仅直挂政策域不向量召回 | `grader-high-risk-dual-track` |
@@ -535,7 +535,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 
 以下事项**本项目明确不做**，agentic coding 助手不要主动"帮忙"加上：
 
-1. **不替代教师终判**：不自动录分、不自动判学术不端、不自动发公开评语；4 个写动作永远只到 `HighRiskProposal`，由 instructor 审批；
+1. **不替代教师最终认定**：不自动录分、不自动判学术不端、不自动发公开评语；4 个写动作永远只到 `HighRiskProposal`，由 instructor 审批；
 2. **不做真实分数录入生产**：本项目是教学/骨架样本，不直连真实 LMS 写接口做生产录分；`lms_client` 的写路径只到 proposal；
 3. **不存学生 PII**：记忆白名单只存 course_id / assignment_id / rubric 偏好 / batch 进度；学生作业原文、姓名、学号、邮箱、手机号一律不进记忆，trace 一律递归脱敏；
 4. **不读 hidden CoT**：trace 递归脱敏是强制的，eval 也不许读 hidden CoT；不要"为了调试方便"加一个关闭开关；
@@ -570,7 +570,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 以下五件事**任何情况下不允许删除、不允许加开关绕过、不允许"简化"掉**：
 
 1. **六种 Grader 化 skip final model 场景**（§6.5：`security_blocked` / `deterministic_short_circuit` / `awaiting_human_approval` / `tool_empty_or_error` / `tainted_source_redacted` / `cost_budget_truncated`）不可删；
-2. **HITL 审批授权闸 + 三道闸**（闸 0 审批人须为该课主讲讲师 / resume 令牌校验 / `business_recheck` 冻结字段 / 幂等键）不可绕过；student / ta 可发起立案，但持 token 审批必须被 `approver_not_authorized` 拒绝；
+2. **HITL 审批授权闸 + 三道闸**（闸 0 审批人须为该课主讲讲师 / resume 令牌校验 / `business_recheck` 冻结字段 / 幂等键）不可绕过；student / ta 可发起转交，但持 token 审批必须被 `approver_not_authorized` 拒绝；
 3. **trace 递归脱敏**（删 `system_prompt` / `hidden_reasoning`、掩码学生 PII、攻击原文只记哈希不记原文）不可关闭；
 4. **用户消息（HTTP `text`）与学生作业正文永远是 Untrusted**（信任序第 5 级）；LMS 授课名单快照与用户自称冲突时，永远以快照为准；
 5. **成本治理不跳过业务事实与 HITL**：缓存命中 / token 预算截断只能跳最终模型生成，绝不跳过只读工具对账、绝不跳过 `business_recheck`、绝不跳过教师审批。
@@ -591,7 +591,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 | 8 | RAG | `rag/` 4 索引域+1 直挂域；按 intent 选域；`academic_integrity_question`/`grade_appeal` 仅直挂不向量召回；hybrid 召回 + rerank + 索引/检索缓存 | `RAGRouteMap` | 4 索引域 + 政策直挂机制 |
 | 9 | 多 agent | 仅 `batch_grading` 的 map/reduce（分片并行初批+lead 横向校准）；确定性约束（白名单/温度0/recursion_limit6/分片失败兜底/lead 只建议±1 分）；M1 单线程 for 循环+checkpoint，并行列 M2 | `BatchState.parallelism` | map/reduce + lead 校准 |
 | 10 | LangGraph state | `harness/approval_gate.py` 5 节点状态机；`GradeGraphState`（submission_id/state/draft_score/draft_feedback/flagged_reasons/frozen_fields/draft/history）；任何状态下学生换版本打回 received | `GradeGraphState` | ApprovalGate 状态机 |
-| 11 | HITL | **发起 ≠ 审批**：student/ta 可发起申诉/学术不端立案（只产提案、暂停、无副作用），审批终录/终判仅 instructor；ApprovalGate 恢复先过闸 0 审批授权（roster 仲裁审批人，非讲师 `approver_not_authorized`、立案保留），再过 resume 三道闸；4 冻结字段；business_recheck 三触发；幂等键=`submission_id+rubric_version+approved_instructor_id+timestamp_bucket`；`/sessions/{id}/approval` 端点 | `ApprovalGateConfig` | ApprovalGate + 审批授权 + resume 三道闸 |
+| 11 | HITL | **发起 ≠ 审批**：student/ta 可发起申诉/学术不端转交（只产提案、暂停、无副作用），审批终录/最终认定仅 instructor；ApprovalGate 恢复先过闸 0 审批授权（roster 仲裁审批人，非讲师 `approver_not_authorized`、转交记录保留），再过 resume 三道闸；4 冻结字段；business_recheck 三触发；幂等键=`submission_id+rubric_version+approved_instructor_id+timestamp_bucket`；`/sessions/{id}/approval` 端点 | `ApprovalGateConfig` | ApprovalGate + 审批授权 + resume 三道闸 |
 | 12 | 提示词管理 | `harness/prompts/` 8 片段 registry：`grader_role`(100,always) / `permission_matrix`(90,always) / `anti_injection_reminder`(80,always) / `rubric_scoring_method`(70,when_rag) / `high_risk_disclaimer`(60,when_route高风险) / `batch_grading_frame`(50,when_route=batch_grading) / `low_confidence_fallback`(40,when_route=low_confidence) / `deterministic_block_script`(30,when_route=security)；`render_system_prompt` 不混入动态学生数据，registry 只存片段 ID | `prompt_registry.yml` | prompts registry |
 | 13 | 记忆 | 白名单只存 course_id/assignment_id/教师 rubric 偏好/batch 进度；拒存学生作业原文/PII/草稿分数评语；历史窗口按 token 预算压缩 | memory 白名单 | ContextBuilder 记忆压缩 |
 | 14 | 防注入 | 作业正文本身是不可信外部数据；三级信任标（Trusted=LMS 身份快照/系统片段，Semi-trusted=LMS 工具返回，Untrusted=学生作业/申诉/聊天输入）；`harness/source_guard.py` 作用于作业正文；6 条注入正则；被清洗内容进 trace 但只记位置+长度+sha256+命中正则 | `source_safety` payload | source_guard 三级信任标 |
@@ -615,7 +615,7 @@ Grader 的设计目标是不依赖真实 LLM、不依赖真实 LMS 也能端到�
 - **vs OpenAI Agents SDK / Claude Agent SDK**：模型只是 `plan()` 阶段的可替换初批提议者，停不停、录不录由骨架一票否决，终审权永远在教师；
 - **vs Anthropic harness engineering**：`rule_guard` 是 guides，`grader_trace_v1` + `context_report` 是 sensors；sensors 从事后日志前移到 schema 层强制，且作业正文这种天然不可信输入被显式建模为 Untrusted；
 - **vs 普通 RAG 项目**：RAG 不是万能入口——`academic_integrity_policy` 直挂不向量召回，guardrail 写成代码（route veto + Pydantic 跨字段校验 + 三级权限矩阵），prompt 里不许出现"请公平打分"这种软约束；
-- **vs 自动批改/教育科技 demo**：Grader 不假装自己是老师——它只做初批提案，终录、终判、公开评语全部 HITL，且每条评语可按 rubric_item 重放以应对公平性申诉。
+- **vs 自动批改/教育科技 demo**：Grader 不假装自己是老师——它只做初批提案，终录、最终认定、公开评语全部 HITL，且每条评语可按 rubric_item 重放以应对公平性申诉。
 
 ---
 

@@ -51,7 +51,7 @@ const SIGNAL_HINT: Record<string, string> = {
   tool_readonly: '本次只调用了只读查询工具，没有触碰任何写动作',
   draft_graded: '已产出初批草稿（rubric 逐条分数 + 评语），不是最终成绩',
   require_approval: '等待主讲教师审批；审批通过前不会录入成绩',
-  workflow_human: '高风险事项，已转人工工作流（立案 + 暂停等审批）',
+  workflow_human: '高风险事项，已转人工工作流（记录转交 + 暂停等审批）',
   needs_human_approval: '需要主讲教师本人处理，系统不自动执行',
   rag_hit: '命中知识库检索，引用见下方 RAG 面板',
   cache_hit: '命中缓存，跳过最终模型生成（成本治理，不跳过审批）',

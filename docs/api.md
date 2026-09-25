@@ -32,12 +32,12 @@ Grader 假设前面有一个 LMS SSO 网关，完成登录后把身份透传进�
 | 查自己作业状态 / rubric / 大纲 | ✅ | ✅ | ✅ |
 | 查他人成绩 / 他人历史 | ❌ | ✅（授课班内） | ✅ |
 | 发起初批（产出草稿、进入待审批） | ❌ | ✅ | ✅ |
-| 发起成绩申诉 / 学术不端咨询·举报（仅立案、产提案） | ✅ | ✅ | ✅ |
-| 审批并执行终录 / 判学术不端 / 公开评语 | ❌ | ❌（只能起草提案） | ✅ |
+| 发起成绩申诉 / 学术不端咨询·反映（仅转交、产提案） | ✅ | ✅ | ✅ |
+| 审批并执行终录 / 认定学术不端 / 公开评语 | ❌ | ❌（只能起草提案） | ✅ |
 
 越权（学生规划录分、解析出的 `submission_id` 不属于本人、工具不在白名单）在 `/chat` 阶段即被 `route_guard` / `rule_veto` 阻断。
 
-> **发起 ≠ 审批**：学生 / ta 可以发起成绩申诉、学术不端咨询或举报（只立案、产 `HighRiskProposal`、暂停等审批，无副作用），但任何写动作的**审批与执行**仅该课主讲教师。恢复入口先过审批授权闸，非讲师持令牌审批返回 `blocked/approver_not_authorized`（见 §10）。
+> **发起 ≠ 审批**：学生 / ta 可以发起成绩申诉、学术不端咨询或反映（只转交、产 `HighRiskProposal`、暂停等审批，无副作用），但任何写动作的**审批与执行**仅该课主讲教师。恢复入口先过审批授权闸，非讲师持令牌审批返回 `blocked/approver_not_authorized`（见 §10）。
 
 ---
 
@@ -524,7 +524,7 @@ curl -s -X POST http://localhost:8000/feedback/submit \
 
 | `reason` | 触发条件 | 调用方应做什么 |
 |---|---|---|
-| `approver_not_authorized` | 审批人不是该课主讲教师（student / ta 持令牌审批，闸 0 拦截） | 不要重试；立案保留，转交该课主讲教师；trace 记 `approver_authorization_denied` |
+| `approver_not_authorized` | 审批人不是该课主讲教师（student / ta 持令牌审批，闸 0 拦截） | 不要重试；转交记录保留，由该课主讲教师处理；trace 记 `approver_authorization_denied` |
 | `invalid_resume_token` | resume 令牌错误、过期或与会话不匹配 | 不要重试；重新拉起审批页 |
 | `checkpoint_not_found` | 该会话没有待审批工作流（无 token / 已清理） | 重新发起初批 |
 | `business_fact_drift` | `business_recheck` 发现冻结字段漂移（`submission_body_hash` / `rubric_version` / `similarity_score` / `submission_timestamp` 任一变化） | 回到初批重新打分；漂移字段列在 `business_recheck.drift_fields` |

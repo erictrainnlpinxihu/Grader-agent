@@ -35,7 +35,7 @@ def _now_date_bucket() -> str:
 # 审批通过（recorded）后，按 checkpoint 里的提案动作给出对外话术与已授权动作清单
 _RECORDED_ANSWERS = {
     "record_final_grade": "审批通过：{sid} 成绩已录入，草稿评语已对学生公开。",
-    "judge_academic_misconduct": "审批通过：{sid} 的学术不端终判已由主讲教师确认并记录。",
+    "judge_academic_misconduct": "审批通过：{sid} 的学术不端最终认定已由主讲教师确认并记录。",
     "recommend_deferred_exam": "审批通过：{sid} 的缓考推荐已由主讲教师确认并提交。",
 }
 _RECORDED_ACTIONS = {
@@ -218,8 +218,29 @@ class GraderAgent:
                     )
                 )
             elif route_plan.route_kind == "workflow_human":
+                # 转交前的只读取证：复用 ReAct 只读回路（白名单 + 权限 + hooks +
+                # source_guard），把提交 / 查重事实附进提案与响应 tool_calls。
+                # 证据只是教师复核的参考材料，不产生任何定性结论；取证失败
+                # （如学生查他人提交被权限拦下）不阻断转交。
+                if route_plan.required_tools and tool_args.get("submission_id"):
+                    evidence = self.react_loop.run(
+                        route_plan, rt, tool_args, hooks=hooks, session_id=session_id
+                    )
+                    tool_results = evidence["tool_results"]
+                    tool_obs = evidence["observations"]
+                    if evidence["tool_names_called"]:
+                        self.trace_store.add(
+                            make_event(
+                                "tool_called",
+                                session_id,
+                                {
+                                    "tools": evidence["tool_names_called"],
+                                    "stage": "workflow_evidence",
+                                },
+                            )
+                        )
                 pending_approval, pinned = self._act_workflow(
-                    route_plan, rt, tool_args, session_id
+                    route_plan, rt, tool_args, session_id, tool_results=tool_results
                 )
                 if pinned:
                     # 高风险学术诚信分支：把直挂政策 citation 并入检索结果，
@@ -424,7 +445,7 @@ class GraderAgent:
         submission_id = checkpoint["submission_id"]
 
         # 审批授权闸：以 LMS 授课名单快照仲裁审批人角色。
-        # student / ta 可以发起立案，但终录 / 终判 / 缓考推荐仅 instructor 可审批。
+        # student / ta 可以发起转交，但终录 / 学术不端最终认定 / 缓考推荐仅 instructor 可审批。
         course_id = checkpoint.get("course_id") or request.get("course_id") or "CS101-2026spring"
         roster = self.lms.get_instructor_roster(course_id) or {}
         if roster.get("instructor_id") == instructor_id:
@@ -459,8 +480,8 @@ class GraderAgent:
             return {
                 "session_id": session_id,
                 "answer": (
-                    "审批被拒：终录成绩 / 学术不端终判 / 缓考推荐仅主讲教师有权审批。"
-                    "立案已保留，将转主讲教师处理。"
+                    "审批被拒：终录成绩 / 学术不端最终认定 / 缓考推荐仅主讲教师有权审批。"
+                    "转交记录已保留，将由主讲教师处理。"
                 ),
                 "status": "blocked",
                 "reason": "approver_not_authorized",
@@ -559,34 +580,50 @@ class GraderAgent:
             "rubric_version": assignment.get("rubric_version", "v1.0"),
         }
 
+    @staticmethod
+    def _evidence_summary(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+        """把只读取证压缩为提案证据摘要（只记事实，不记结论）。"""
+        evidence: dict[str, Any] = {}
+        for t in tool_results:
+            res = t.get("result") or {}
+            if t.get("tool_name") == "get_submission":
+                evidence["submission_status"] = res.get("status")
+                evidence["final_score"] = res.get("final_score")
+            elif t.get("tool_name") == "check_similarity":
+                evidence["similarity_score"] = res.get("similarity_score")
+                evidence["similarity_flagged"] = bool(res.get("flagged"))
+        return evidence
+
     def _act_workflow(
         self,
         route_plan: Any,
         rt: RuntimeContext,
         tool_args: dict[str, Any],
         session_id: str,
+        tool_results: Optional[list[dict[str, Any]]] = None,
     ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
         submission_id = tool_args.get("submission_id") or "S1001"
         if route_plan.intent == "deferred_exam_query":
             action = "recommend_deferred_exam"
         elif route_plan.intent == "grade_appeal":
-            # 成绩申诉可能改分，对应终录动作；学术不端疑问对应学术不端终判
+            # 成绩申诉可能改分，对应终录动作；学术不端疑问对应学术不端最终认定
             action = "record_final_grade"
         else:
             # academic_integrity_question 默认
             action = "judge_academic_misconduct"
         frozen = self._freeze_from_lms(submission_id)
+        evidence = self._evidence_summary(tool_results or [])
         proposal = HighRiskProposal(
             action=action,
             submission_id=submission_id,
-            proposed_payload={"intent": route_plan.intent},
+            proposed_payload={"intent": route_plan.intent, "evidence": evidence},
             frozen_fields=frozen,
         )
         self.trace_store.add(
             make_event(
                 "workflow_proposal_created",
                 session_id,
-                {"action": action, "submission_id": submission_id},
+                {"action": action, "submission_id": submission_id, "evidence": evidence},
             )
         )
         pending = self._open_checkpoint(
