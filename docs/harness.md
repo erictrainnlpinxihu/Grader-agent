@@ -203,14 +203,43 @@ stateDiagram-v2
 
 0. **审批授权闸**：用授课名单快照仲裁审批人真实角色，只有 instructor 进入后续。student / ta 即便持有合法 resume_token 也直接 `blocked / approver_not_authorized`——**不迁移状态、不写幂等表，转交记录保留**，提示转主讲教师处理。这一闸把"发起 ≠ 审批"落成代码。
 1. **resume 令牌闸**：token 找不到 checkpoint → `blocked / invalid_resume_token`。token 是一次性、不可猜测的随机串，把恢复请求绑定到唯一一个被冻结的审批现场——但 token 只是能力证明，不是身份证明，身份由闸 0 仲裁。
-2. **business_recheck 现场复核闸**：恢复前重新拉一次 LMS，逐字段比对冻结值与当前值，任一不同 → `blocked / business_fact_drift`（见 §5.3）。
-3. **幂等键闸**：键 = `sha256(submission_id | rubric_version | approved_instructor_id | UTC 日期桶)`，重复恢复返回 `idempotent_replay`、不再产生副作用——同一次批准不会落地两遍。
+2. **business_recheck 现场复核闸**：恢复前重新拉一次 LMS，逐字段比对冻结值与当前值，任一不同 → `blocked / business_fact_drift`（见 §5.4）。
+3. **幂等键闸**：键 = `sha256(submission_id | rubric_version | approved_instructor_id | UTC 日期桶)`，重复恢复返回 `idempotent_replay`、不再产生副作用——同一次批准不会落地两遍。实现细节与设计目的见 §5.3。
 
 四道闸各自证明一件事，缺一不可：闸 0 证明**你是有权拍板的主讲教师**；闸 1 证明**你恢复的是这次审批**；闸 2 证明**你当初批的东西现在还作数**；闸 3 保证**这次批准只落地一次**。通过后按决策迁移：`approve` 走完 `approved → recorded`；`reject → rejected`；`needs_more_info → paused`（可再恢复）。
 
-> **教学版边界**：ApprovalGate 只迁移内存中的状态机并记录提案，**不真正回写 LMS 成绩接口**；HTTP 层 `recorded_actions` 是"被授权的动作清单"。真实写路径对接见 [生产化升级方案](./engineering.md#5-lms-写路径对接)。幂等键按 UTC 天聚合，同一天重复恢复幂等、跨天可再次执行，是教学简化。
+> **教学版边界**：ApprovalGate 只迁移内存中的状态机并记录提案，**不真正回写 LMS 成绩接口**；HTTP 层 `recorded_actions` 是"被授权的动作清单"。真实写路径对接见 [生产化升级方案](./engineering.md#5-lms-写路径对接)。
 
-### 5.3 业务事实漂移与回退
+### 5.3 幂等键闸：实现与设计目的
+
+**实现**（`harness/approval_gate.py:188-232`）——四个字段拼出幂等键：
+
+```python
+idempotency_key = sha256("submission_id | rubric_version | approved_instructor_id | UTC 日期桶")
+```
+
+- 键在**闸 0/1/2 全部通过之后**才计算与检查：排在幂等闸之前的拒绝（非讲师 / 令牌无效 / 现场漂移）一律**不写幂等表**——只有真正落定过动作的决定才占用一个键；
+- 首次恢复执行（approve / reject / needs_more_info 迁移完状态机）后，把结果写入进程内 `_executed[key] = result`；
+- 再次恢复命中该键：**不执行、不迁移状态、不报错**，直接返回首次的结果（`status=idempotent_replay`、`accepted=true`、附首次结果）——调用方拿到的语义是**安全重放**，不是错误；
+- 教学版简化：`timestamp_bucket` 取 UTC 日期——同一天内重复恢复幂等，跨天可再次执行；生产化需换成持久化键值存储（[engineering.md §3](./engineering.md)）。
+
+**设计目的**——为什么录分这种"写两遍结果一样"的覆盖型操作也要设幂等闸。退款原型的幂等闸防的是资损（扣减型操作执行两次 = 多退一笔钱）；成绩场景没有同构的资损，设防理由要按动作重新推导：
+
+| 写动作 | 双重执行的真实后果 | 严重度 |
+|---|---|---|
+| `judge_academic_misconduct` | 教务不端记录通常是**追加型事件**而非覆盖型状态——两次执行可能留下两条记录，纸面上加重处分 | 高 |
+| `record_final_grade` | 最终成绩不变（覆盖型写），但 LMS 多记一条"终录后变更"事件，触发教务复核解释成本；trace 出现两次执行，破坏"一次教师决定 ↔ 一次落库动作"的审计对应 | 低（审计噪音） |
+| `record_final_grade` 附带 `publish_feedback` | 评语对学生重复公开 / 重复通知 | 低 |
+
+统一设防（而不是只给不端认定加闸）的三个理由：
+
+1. **下游写语义不可控**：LMS 是外部系统，Grader 不能假设厂商把录分实现成幂等 PUT；按"每个高风险写都可能是非幂等的"最坏缺省设防，代价只是一张哈希表——这是 fail-safe 取向，不是对资损的精确建模；
+2. **审计口径**：本项目的核心承诺是每个不可逆动作可回放、可对账（每条评语带 rubric_item_id + chunk_hash）。幂等闸保证**决定与动作 1:1 映射**，这是面对"为什么给他 90 给我 85"的申诉时能自证清白的前提；
+3. **吸收真实重试**：教师双击"批准"、网络重发、前端重复 resume 都落到同一条安全路径，调用方无需任何特殊处理。
+
+对应离线回归 `grader-resume-idempotent-replay`：同一审批连续两次 resume，断言第二次 `idempotent_replay=true` 且写动作只执行一次。
+
+### 5.4 业务事实漂移与回退
 
 一句话：**冻结的是"当时的事实"，恢复时核对"现在的事实"；对不上就拒绝执行、打回重来——不让讲师对着一份已经过期的事实拍板。**
 
