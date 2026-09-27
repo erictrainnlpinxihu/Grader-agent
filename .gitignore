@@ -13,3 +13,5 @@ grader-console/*.local
 grader-console/*.tsbuildinfo
 grader-console/npm-debug.log*
 grader-console/yarn-error.log*
+
+docs/zhihu/
