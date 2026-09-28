@@ -9,7 +9,7 @@
 要求 **Python 3.11+**。仓库根目录自带 `pyproject.toml`，建议以可编辑模式安装：
 
 ```bash
-cd grader   # clone 后的仓库根目录（pyproject.toml 所在目录）
+cd Grader-agent   # clone 后的仓库根目录（pyproject.toml 所在目录）
 pip install -e .
 ```
 

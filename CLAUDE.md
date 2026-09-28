@@ -23,7 +23,7 @@
 ## 3. 目录说明
 
 ```
-grader/
+Grader-agent/
 ├── api/                          # HTTP 接入层
 │   ├── main.py                  # FastAPI 入口（uvicorn 0.0.0.0:8000）
 │   ├── routes.py                # 8 端点路由
